@@ -5,7 +5,7 @@ import {
   POSITION_TO_PIN,
 } from '../board';
 import type { BoardState } from '../board';
-import { PIECE_LABELS, PIECE_COLORS } from '../constants';
+import { PIECE_LABELS, PIECE_COLORS, SOLVER_TO_YOLO_INDEX } from '../constants';
 import type { Placement } from '../board';
 import type { PieceMapping } from '../board/gridMapper';
 
@@ -20,7 +20,7 @@ const SVG_SIZE = 440;
 const CENTER = SVG_SIZE / 2;
 const SCALE = 26;
 const PIN_RADIUS = 6;
-const NOODLE_WIDTH = 12;
+const NOODLE_WIDTH = 18;
 
 /**
  * Convert board coordinates to SVG coordinates.
@@ -31,7 +31,6 @@ function toSvg(bx: number, by: number): [number, number] {
 
 /**
  * Get the ordered pin sequence for a placement.
- * Walks the placement positions and extracts the unique pins in path order.
  */
 function getOrderedPins(placement: Placement): number[] {
   const seen = new Set<number>();
@@ -47,8 +46,8 @@ function getOrderedPins(placement: Placement): number[] {
 }
 
 /**
- * Generate an SVG path for a noodle piece going through a sequence of pins.
- * Uses quadratic bezier curves for smooth noodle-like paths.
+ * Generate a smooth noodle SVG path through a sequence of pins.
+ * Uses quadratic bezier curves for smooth, rounded noodle-like paths.
  */
 function generateNoodlePath(pinSequence: number[]): string {
   if (pinSequence.length < 2) return '';
@@ -58,58 +57,24 @@ function generateNoodlePath(pinSequence: number[]): string {
     return toSvg(bx, by);
   });
 
-  // Start at first point
   let d = `M ${points[0][0]} ${points[0][1]}`;
 
   if (points.length === 2) {
-    // Simple line
     d += ` L ${points[1][0]} ${points[1][1]}`;
   } else {
-    // Use smooth quadratic curves through intermediate points
     for (let i = 1; i < points.length - 1; i++) {
       const [cx, cy] = points[i];
       const [nx, ny] = points[i + 1];
-      // Control point at the current pin, end at midpoint to next
       const midX = (cx + nx) / 2;
       const midY = (cy + ny) / 2;
       d += ` Q ${cx} ${cy} ${midX} ${midY}`;
     }
-    // Final segment to last point
     const last = points[points.length - 1];
     const prev = points[points.length - 2];
     d += ` Q ${prev[0]} ${prev[1]} ${last[0]} ${last[1]}`;
   }
 
   return d;
-}
-
-/**
- * Generate round end-caps (circles at the start and end of each noodle).
- */
-function NoodleEndCaps({ pins, color }: { pins: number[]; color: string }) {
-  if (pins.length === 0) return null;
-  const first = pins[0];
-  const last = pins[pins.length - 1];
-  const capPins = first === last ? [first] : [first, last];
-
-  return (
-    <>
-      {capPins.map(pin => {
-        const [bx, by] = PIN_COORDINATES[pin];
-        const [sx, sy] = toSvg(bx, by);
-        return (
-          <circle
-            key={`cap-${pin}`}
-            cx={sx}
-            cy={sy}
-            r={NOODLE_WIDTH / 2 + 1}
-            fill={color}
-            opacity="0.9"
-          />
-        );
-      })}
-    </>
-  );
 }
 
 export function BoardView({ mappings, hintPlacement }: BoardViewProps) {
@@ -127,8 +92,14 @@ export function BoardView({ mappings, hintPlacement }: BoardViewProps) {
     for (const mapping of mappings) {
       if (!mapping.placement) continue;
       const pieceIndex = mapping.placement.pieceIndex;
-      const label = PIECE_LABELS[pieceIndex];
-      const { rgb } = PIECE_COLORS[label];
+
+      // Use the YOLO detection color (the physical piece color)
+      const detRgb = mapping.detection.rgb;
+      const rgb: [number, number, number] = detRgb
+        ? [detRgb[0], detRgb[1], detRgb[2]]
+        : PIECE_COLORS[PIECE_LABELS[pieceIndex]]?.rgb ?? [128, 128, 128];
+      const label = mapping.detection.label;
+
       const pinSequence = getOrderedPins(mapping.placement);
       const path = generateNoodlePath(pinSequence);
 
@@ -147,11 +118,12 @@ export function BoardView({ mappings, hintPlacement }: BoardViewProps) {
     return pieces;
   }, [mappings]);
 
-  // Hint piece
+  // Hint piece — use reverse mapping to get YOLO color for solver piece index
   const hintPiece = useMemo(() => {
     if (!hintPlacement) return null;
     const pieceIndex = hintPlacement.pieceIndex;
-    const label = PIECE_LABELS[pieceIndex];
+    const yoloIdx = SOLVER_TO_YOLO_INDEX[pieceIndex];
+    const label = PIECE_LABELS[yoloIdx] ?? PIECE_LABELS[pieceIndex];
     const { rgb } = PIECE_COLORS[label];
     const pinSequence = getOrderedPins(hintPlacement);
     const path = generateNoodlePath(pinSequence);
@@ -167,10 +139,10 @@ export function BoardView({ mappings, hintPlacement }: BoardViewProps) {
 
   // Occupied pins (for highlighting)
   const occupiedPins = useMemo(() => {
-    const map = new Map<number, { pieceIndex: number; color: string }>();
+    const map = new Map<number, { pieceIndex: number; color: string; label: string }>();
     for (const piece of placedPieces) {
       for (const pin of piece.pinSequence) {
-        map.set(pin, { pieceIndex: piece.pieceIndex, color: piece.color });
+        map.set(pin, { pieceIndex: piece.pieceIndex, color: piece.color, label: piece.label });
       }
     }
     return map;
@@ -184,6 +156,16 @@ export function BoardView({ mappings, hintPlacement }: BoardViewProps) {
         className="board-svg"
         xmlns="http://www.w3.org/2000/svg"
       >
+        {/* Definitions */}
+        <defs>
+          {/* Glossy gradient for noodle highlights */}
+          <linearGradient id="noodle-gloss" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="white" stopOpacity="0.35" />
+            <stop offset="40%" stopColor="white" stopOpacity="0.08" />
+            <stop offset="100%" stopColor="black" stopOpacity="0.1" />
+          </linearGradient>
+        </defs>
+
         {/* Background */}
         <rect x="0" y="0" width={SVG_SIZE} height={SVG_SIZE} fill="#1a1a2e" rx="12" />
 
@@ -224,41 +206,107 @@ export function BoardView({ mappings, hintPlacement }: BoardViewProps) {
           });
         })}
 
-        {/* Placed piece noodle paths (thick colored curves) */}
-        {placedPieces.map((piece) => (
-          <g key={`piece-${piece.pieceIndex}`}>
-            {/* Shadow/outline */}
-            <path
-              d={piece.path}
-              fill="none"
-              stroke="rgba(0,0,0,0.4)"
-              strokeWidth={NOODLE_WIDTH + 4}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-            {/* Main noodle path */}
-            <path
-              d={piece.path}
-              fill="none"
-              stroke={piece.color}
-              strokeWidth={NOODLE_WIDTH}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              opacity="0.85"
-            />
-            {/* Highlight / gloss effect */}
-            <path
-              d={piece.path}
-              fill="none"
-              stroke="rgba(255,255,255,0.15)"
-              strokeWidth={NOODLE_WIDTH - 4}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-            {/* End caps */}
-            <NoodleEndCaps pins={piece.pinSequence} color={piece.color} />
-          </g>
-        ))}
+        {/* Placed piece noodle paths — thick rounded curves like physical pieces */}
+        {placedPieces.map((piece) => {
+          // Compute darker and lighter variants for depth effect
+          const darkerColor = `rgb(${Math.max(0, piece.rgb[0] - 40)},${Math.max(0, piece.rgb[1] - 40)},${Math.max(0, piece.rgb[2] - 40)})`;
+
+          return (
+            <g key={`piece-${piece.pieceIndex}`}>
+              {/* Drop shadow */}
+              <path
+                d={piece.path}
+                fill="none"
+                stroke="rgba(0,0,0,0.35)"
+                strokeWidth={NOODLE_WIDTH + 6}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                transform="translate(1.5, 2.5)"
+              />
+              {/* Dark outer edge — simulates the groove/border of the piece */}
+              <path
+                d={piece.path}
+                fill="none"
+                stroke={darkerColor}
+                strokeWidth={NOODLE_WIDTH + 3}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              {/* Main noodle body — the actual piece color */}
+              <path
+                d={piece.path}
+                fill="none"
+                stroke={piece.color}
+                strokeWidth={NOODLE_WIDTH}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              {/* Glossy highlight — simulates the rounded, shiny surface */}
+              <path
+                d={piece.path}
+                fill="none"
+                stroke="rgba(255,255,255,0.22)"
+                strokeWidth={NOODLE_WIDTH - 6}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              {/* Bright center highlight — the specular reflection line */}
+              <path
+                d={piece.path}
+                fill="none"
+                stroke="rgba(255,255,255,0.12)"
+                strokeWidth={Math.max(2, NOODLE_WIDTH - 12)}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              {/* Round end-caps at start and end of the noodle */}
+              {[piece.pinSequence[0], piece.pinSequence[piece.pinSequence.length - 1]].map((pin, i) => {
+                const [bx, by] = PIN_COORDINATES[pin];
+                const [sx, sy] = toSvg(bx, by);
+                return (
+                  <g key={`cap-${piece.pieceIndex}-${i}`}>
+                    {/* Outer cap */}
+                    <circle
+                      cx={sx} cy={sy}
+                      r={(NOODLE_WIDTH + 3) / 2}
+                      fill={darkerColor}
+                    />
+                    {/* Inner cap matching body */}
+                    <circle
+                      cx={sx} cy={sy}
+                      r={NOODLE_WIDTH / 2}
+                      fill={piece.color}
+                    />
+                    {/* Highlight cap */}
+                    <circle
+                      cx={sx} cy={sy}
+                      r={(NOODLE_WIDTH - 6) / 2}
+                      fill="rgba(255,255,255,0.18)"
+                    />
+                  </g>
+                );
+              })}
+              {/* Piece label at the center of the noodle */}
+              {(() => {
+                const mid = Math.floor(piece.pinSequence.length / 2);
+                const pin = piece.pinSequence[mid];
+                const [bx, by] = PIN_COORDINATES[pin];
+                const [sx, sy] = toSvg(bx, by);
+                return (
+                  <text
+                    x={sx} y={sy + 1}
+                    textAnchor="middle" dominantBaseline="middle"
+                    fill="white" fontSize="9" fontWeight="800"
+                    fontFamily="Inter, sans-serif" pointerEvents="none"
+                    stroke="rgba(0,0,0,0.6)" strokeWidth="2.5" paintOrder="stroke"
+                  >
+                    {piece.label}
+                  </text>
+                );
+              })()}
+            </g>
+          );
+        })}
 
         {/* Hint noodle path (dashed, animated) */}
         {hintPiece && (
@@ -271,11 +319,11 @@ export function BoardView({ mappings, hintPlacement }: BoardViewProps) {
               strokeLinecap="round"
               strokeLinejoin="round"
               opacity="0.4"
-              strokeDasharray="6 6"
+              strokeDasharray="8 6"
             >
               <animate
                 attributeName="stroke-dashoffset"
-                from="0" to="12"
+                from="0" to="14"
                 dur="0.8s"
                 repeatCount="indefinite"
               />
@@ -313,33 +361,21 @@ export function BoardView({ mappings, hintPlacement }: BoardViewProps) {
           </g>
         )}
 
-        {/* Pins */}
+        {/* Pins (drawn on top) */}
         {PIN_COORDINATES.map(([bx, by], pin) => {
           const [sx, sy] = toSvg(bx, by);
           const occupied = occupiedPins.get(pin);
 
           return (
             <g key={`pin-${pin}`}>
-              {/* Pin dot */}
               <circle
                 cx={sx} cy={sy}
-                r={occupied ? PIN_RADIUS + 1 : PIN_RADIUS}
-                fill={occupied ? occupied.color : 'rgba(255,255,255,0.1)'}
-                stroke={occupied ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.15)'}
-                strokeWidth={occupied ? 1.5 : 1}
+                r={occupied ? 4 : PIN_RADIUS}
+                fill={occupied ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.1)'}
+                stroke={occupied ? 'rgba(0,0,0,0.2)' : 'rgba(255,255,255,0.15)'}
+                strokeWidth={1}
                 className="board-pin"
               />
-              {/* Label on occupied pins */}
-              {occupied && (
-                <text
-                  x={sx} y={sy + 1}
-                  textAnchor="middle" dominantBaseline="middle"
-                  fill="white" fontSize="8" fontWeight="700"
-                  fontFamily="Inter, sans-serif" pointerEvents="none"
-                >
-                  {PIECE_LABELS[occupied.pieceIndex]}
-                </text>
-              )}
             </g>
           );
         })}

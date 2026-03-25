@@ -41,3 +41,43 @@ export const CLASS_NAMES = [
   'J_DarkRed',      // 9
   'K_YellowGreen',  // 10
 ] as const;
+
+/**
+ * Maps YOLO class ID (0–10, A–K) → Java solver piece index (0–10).
+ *
+ * The Blender training script assigns class IDs by color (A=Yellow, B=SkyBlue, …).
+ * The Java solver (PiecesNoodles.java) assigns piece indices by shape, with its
+ * own independent color ordering (0=DarkRed, 1=DarkBlue, 2=Purple, …).
+ *
+ * This table bridges the two: when YOLO detects class 0 (Yellow), we must use
+ * Java piece 4 (whose shape is the Yellow noodle) for the solver.
+ *
+ * Derived by matching Blender colors ↔ Java colors:
+ *   A(Yellow)→4, B(SkyBlue)→3, C(DarkBlue)→1, D(Green)→8, E(Red)→10,
+ *   F(Teal)→9, G(Pink)→7, H(Purple)→2, I(Orange)→6, J(DarkRed)→0, K(YellowGreen)→5
+ */
+export const YOLO_TO_SOLVER_INDEX: readonly number[] = [
+  4,   // A (Yellow)      → Java 4  (Yellow)
+  3,   // B (SkyBlue)     → Java 3  (SkyBlue)
+  1,   // C (DarkBlue)    → Java 1  (DarkBlue)
+  8,   // D (Green)       → Java 8  (DarkGreen)
+  10,  // E (Red)         → Java 10 (Red)
+  9,   // F (Teal)        → Java 9  (LightGray — 5-pin piece)
+  7,   // G (Pink)        → Java 7  (Pink)
+  2,   // H (Purple)      → Java 2  (Purple)
+  6,   // I (Orange)      → Java 6  (Orange)
+  0,   // J (DarkRed)     → Java 0  (DarkRed)
+  5,   // K (YellowGreen) → Java 5  (YellowGreen)
+];
+
+/**
+ * Reverse mapping: Java solver piece index → YOLO class ID.
+ * Used to look up the correct Blender/YOLO color for a given solver piece.
+ */
+export const SOLVER_TO_YOLO_INDEX: readonly number[] = (() => {
+  const rev = new Array(YOLO_TO_SOLVER_INDEX.length);
+  YOLO_TO_SOLVER_INDEX.forEach((solverIdx, yoloIdx) => {
+    rev[solverIdx] = yoloIdx;
+  });
+  return rev;
+})();

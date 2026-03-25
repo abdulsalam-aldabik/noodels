@@ -14,6 +14,7 @@ import {
   type SolverResult,
   type PieceMapping,
 } from './board';
+import { rectifyBoard, RECTIFIED_SIZE } from './board/boardRectifier';
 import type { InferenceResult, ModelStatus } from './types';
 import './index.css';
 
@@ -34,6 +35,8 @@ function App() {
   const [hintPlacement, setHintPlacement] = useState<Placement | null>(null);
   const [isSolving, setIsSolving] = useState(false);
   const [customBoardBounds, setCustomBoardBounds] = useState<BoardBounds | null>(null);
+  const [rectifiedCanvas, setRectifiedCanvas] = useState<HTMLCanvasElement | null>(null);
+  const [processingStage, setProcessingStage] = useState<string>('');
 
   // Load model on mount
   useEffect(() => {
@@ -48,6 +51,7 @@ function App() {
     setCapturedImage(image);
     setResult(null);
     setError(null);
+    setRectifiedCanvas(null);
     setPhase('capture');
 
     if (!isModelLoaded()) {
@@ -57,34 +61,52 @@ function App() {
 
     setIsProcessing(true);
     try {
-      const inferenceResult = await runInference(image);
+      // Step 1: Rectify the image (detect board corners + perspective warp)
+      setProcessingStage('Detecting board & rectifying...');
+      const rectResult = await rectifyBoard(image);
+      setRectifiedCanvas(rectResult.rectifiedCanvas);
+      console.log(`📐 Board rectified (corners: ${JSON.stringify(rectResult.corners)})`);
+
+      // Step 2: Run YOLO inference on the rectified image
+      setProcessingStage('Running piece detection...');
+      const inferenceResult = await runInference(rectResult.rectifiedCanvas);
       setResult(inferenceResult);
       setPhase('results');
     } catch (err) {
-      console.error('Inference failed:', err);
-      setError(`Inference failed: ${err instanceof Error ? err.message : String(err)}`);
+      console.error('Processing failed:', err);
+      setError(`Processing failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setIsProcessing(false);
+      setProcessingStage('');
     }
   }, []);
 
   const handleMapToBoard = useCallback(() => {
     if (!result) return;
 
-    // Use custom bounds if user dragged the interactive box
-    const { mappings: newMappings, boardState: newBoard } = mapDetectionsToBoard(
-      result.detections, 
-      customBoardBounds || undefined
-    );
-    
-    setBoardState(newBoard);
-    setMappings(newMappings);
-    setSolverResult(null);
-    setHintPlacement(null);
-    setPhase('board');
+    try {
+      // When we have a rectified image, use fixed pin positions (exact coordinates)
+      const rectifiedBounds = rectifiedCanvas
+        ? { minX: 0, minY: 0, width: RECTIFIED_SIZE, height: RECTIFIED_SIZE }
+        : undefined;
 
-    console.log(`📍 Mapped ${newMappings.length} detections to board pins`);
-  }, [result]);
+      const { mappings: newMappings, boardState: newBoard } = mapDetectionsToBoard(
+        result.detections, 
+        rectifiedBounds || customBoardBounds || undefined
+      );
+      
+      setBoardState(newBoard);
+      setMappings(newMappings);
+      setSolverResult(null);
+      setHintPlacement(null);
+      setPhase('board');
+
+      console.log(`📍 Mapped ${newMappings.length} detections to board pins (rectified: ${!!rectifiedCanvas})`);
+    } catch (err) {
+      console.error('Mapping failed:', err);
+      setError(`Mapping failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }, [result, rectifiedCanvas, customBoardBounds]);
 
   const handleSolve = useCallback(() => {
     if (!boardState) return;
@@ -203,7 +225,7 @@ function App() {
               {isProcessing && (
                 <div className="processing-indicator" id="processing-indicator">
                   <div className="processing-indicator__spinner" />
-                  <span>Running YOLO26n-seg inference...</span>
+                  <span>{processingStage || 'Processing...'}</span>
                 </div>
               )}
 

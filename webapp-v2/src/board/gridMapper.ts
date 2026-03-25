@@ -12,9 +12,8 @@ import {
   BoardState,
   PIN_COORDINATES,
   NUM_PINS,
-  POSITIONS_AROUND_PINS,
 } from './board';
-import { PIECE_LABELS } from '../constants';
+import { PIECE_LABELS, YOLO_TO_SOLVER_INDEX } from '../constants';
 import { ALL_PLACEMENTS, type Placement } from './placements';
 import { POSITION_TO_PIN } from './board';
 import type { Detection } from '../types';
@@ -24,6 +23,8 @@ export interface PieceMapping {
   placement: Placement | null;
   pinIndices: number[];
   confidence: number;
+  /** The YOLO class ID (0–10) from the detection — used for color rendering */
+  yoloClassId: number;
 }
 
 /**
@@ -117,15 +118,29 @@ export function mapDetectionsToBoard(
     return { mappings: [], boardState: new BoardState() };
   }
 
+  // Consistency Rule 3: Reject low confidence detections
+  const validDetections = detections.filter(det => det.confidence >= 0.3);
+
+  // Consistency Rule 1: Max 1 of each piece class allowed
+  const classCounts = new Map<string, number>();
+  for (const det of validDetections) {
+    classCounts.set(det.label, (classCounts.get(det.label) || 0) + 1);
+  }
+  for (const [label, count] of classCounts.entries()) {
+    if (count > 1) {
+      throw new Error(`Detection unclear (found multiple ${label}). Please ensure all 4 board corners are visible and take another photo.`);
+    }
+  }
+
   // Use manual user bounds if provided, else fall back to heuristic estimation
-  const boardBounds = userBoardBounds || estimateBoardBounds(detections);
+  const boardBounds = userBoardBounds || estimateBoardBounds(validDetections);
   const pinPixels = computePinPixels(boardBounds);
 
   const labelToIndex = new Map<string, number>();
   PIECE_LABELS.forEach((label, idx) => labelToIndex.set(label, idx));
 
   // Sort by confidence (highest first)
-  const sorted = [...detections].sort((a, b) => b.confidence - a.confidence);
+  const sorted = [...validDetections].sort((a, b) => b.confidence - a.confidence);
 
   // For each detection, find which pins fall within its mask or bbox
   const detectionPins: Array<{ detection: Detection; pins: Set<number> }> = [];
@@ -185,13 +200,28 @@ export function mapDetectionsToBoard(
   const usedPieces = new Set<number>();
 
   for (const { detection, pins: detPins } of detectionPins) {
-    const pieceIndex = labelToIndex.get(detection.label);
-    if (pieceIndex === undefined || usedPieces.has(pieceIndex)) {
+    const yoloClassId = labelToIndex.get(detection.label);
+    if (yoloClassId === undefined) {
       mappings.push({
         detection,
         placement: null,
         pinIndices: Array.from(detPins),
         confidence: detection.confidence,
+        yoloClassId: -1,
+      });
+      continue;
+    }
+
+    // Translate YOLO class ID → Java solver piece index
+    const pieceIndex = YOLO_TO_SOLVER_INDEX[yoloClassId];
+
+    if (usedPieces.has(pieceIndex)) {
+      mappings.push({
+        detection,
+        placement: null,
+        pinIndices: Array.from(detPins),
+        confidence: detection.confidence,
+        yoloClassId,
       });
       continue;
     }
@@ -232,38 +262,14 @@ export function mapDetectionsToBoard(
         placement: bestPlacement,
         pinIndices: matchedPins,
         confidence: detection.confidence,
+        yoloClassId,
       });
       console.log(
-        `✅ ${detection.label} → pins [${matchedPins.join(',')}] (Jaccard: ${bestScore.toFixed(2)})`
+        `✅ ${detection.label} (YOLO ${yoloClassId} → solver ${pieceIndex}) → pins [${matchedPins.join(',')}] (Jaccard: ${bestScore.toFixed(2)})`
       );
     } else {
-      // Fallback: nearest pin, single segment
-      const cx = (detection.bbox[0] + detection.bbox[2]) / 2;
-      const cy = (detection.bbox[1] + detection.bbox[3]) / 2;
-      let nearestPin = 0;
-      let nearestDist = Infinity;
-      for (let pin = 0; pin < NUM_PINS; pin++) {
-        const [px, py] = pinPixels[pin];
-        const dist = Math.sqrt((cx - px) ** 2 + (cy - py) ** 2);
-        if (dist < nearestDist) {
-          nearestDist = dist;
-          nearestPin = pin;
-        }
-      }
-
-      const cells = [...POSITIONS_AROUND_PINS[nearestPin]];
-      if (board.areFree(cells)) {
-        board.place(cells, pieceIndex);
-        usedPieces.add(pieceIndex);
-      }
-
-      mappings.push({
-        detection,
-        placement: null,
-        pinIndices: [nearestPin],
-        confidence: detection.confidence,
-      });
-      console.log(`⚠️ ${detection.label} → fallback pin ${nearestPin}`);
+      // Consistency Rule 2: Pieces cannot overlap the same pins, and must cleanly map to the board.
+      throw new Error(`Detection unclear (${detection.label} overlaps another piece or is off-board). Please ensure all 4 board corners are visible and take another photo.`);
     }
   }
 
