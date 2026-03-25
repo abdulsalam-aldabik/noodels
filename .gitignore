@@ -1,0 +1,72 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Jupyter
+.ipynb_checkpoints/
+
+# YOLO cache
+*.cache
+
+# Training batch images (large, regenerated)
+data/noodles_training/**/train_batch*.jpg
+data/noodles_training/**/val_batch*.jpg
+data/noodles_training/**/predictions/
+
+# Epoch checkpoint weights (only keep best + last)
+data/noodles_training/**/weights/epoch*.pt
+
+# Entire datasets and raw data (download/generate fresh)
+data/raw/
+data/noodles_seg_dataset/
+data/noodles_finetune_dataset/
+data/yolo_dataset/
+data/hdri/
+yolo_dataset/
+
+# Roboflow exports inside notebooks
+notebooks/noodels-1/
+notebooks/noodels-2/
+
+# Base YOLO pretrained weights (re-downloaded by ultralytics)
+notebooks/*.pt
+
+# Blender / 3D
+*.blend
+*.blend1
+*.stl
+*.hdr
+
+# Archive (both devices differ, skip entirely)
+archive/
+
+# Office files (local only)
+~$*
+*.docx
+*.pptx
+*.xlsx
+
+# Windows
+*:Zone.Identifier
+
+# macOS
+.DS_Store
+
+# IDE
+.zencoder/
+.zenflow/
+.vscode/
+.idea/
+
+# Node
+node_modules/
+webapp-v2/dist/
+
+# Misc
+tree_device*.txt
+*.bak
+runs/
+*.zip
+*.tar.gz
+*.torchscript
