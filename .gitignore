@@ -1,4 +1,3 @@
-cat > .gitignore << 'EOF'
 # Python
 __pycache__/
 *.pyc
@@ -13,8 +12,10 @@ __pycache__/
 # Training batch images (large, regenerated)
 data/noodles_training/**/train_batch*.jpg
 data/noodles_training/**/val_batch*.jpg
-data/noodles_training/**/val_batch*.jpg
 data/noodles_training/**/predictions/
+
+# Epoch checkpoint weights (only keep best + last)
+data/noodles_training/**/weights/epoch*.pt
 
 # Entire datasets and raw data (download/generate fresh)
 data/raw/
@@ -23,6 +24,13 @@ data/noodles_finetune_dataset/
 data/yolo_dataset/
 data/hdri/
 yolo_dataset/
+
+# Roboflow exports inside notebooks
+notebooks/noodels-1/
+notebooks/noodels-2/
+
+# Base YOLO pretrained weights (re-downloaded by ultralytics)
+notebooks/*.pt
 
 # Blender
 *.blend
@@ -58,4 +66,4 @@ runs/
 *.tar.gz
 *.hdr
 *.stl
-EOF
+*.torchscript
