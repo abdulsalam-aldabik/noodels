@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect } from 'react';
 import { loadModel, runInference, onModelStatus, isModelLoaded } from './inference';
 import { ImageCapture } from './components/ImageCapture';
-import { ResultsOverlay, type BoardBounds } from './components/ResultsOverlay';
+import { ResultsOverlay } from './components/ResultsOverlay';
 import { PieceLegend } from './components/PieceLegend';
 import { PerformanceStats } from './components/PerformanceStats';
 import { ModelStatusBar } from './components/ModelStatusBar';
@@ -33,7 +33,8 @@ function App() {
   const [solverResult, setSolverResult] = useState<SolverResult | null>(null);
   const [hintPlacement, setHintPlacement] = useState<Placement | null>(null);
   const [isSolving, setIsSolving] = useState(false);
-  const [customBoardBounds, setCustomBoardBounds] = useState<BoardBounds | null>(null);
+  /** Perspective homography H (9 elements) from image-pixel → board-space */
+  const [calibrationH, setCalibrationH] = useState<number[] | null>(null);
 
   // Load model on mount
   useEffect(() => {
@@ -71,10 +72,10 @@ function App() {
   const handleMapToBoard = useCallback(() => {
     if (!result) return;
 
-    // Use custom bounds if user dragged the interactive box
+    // Use homography if calibration points were set, else auto-estimate from bboxes
     const { mappings: newMappings, boardState: newBoard } = mapDetectionsToBoard(
-      result.detections, 
-      customBoardBounds || undefined
+      result.detections,
+      calibrationH ? { H: calibrationH } : undefined,
     );
     
     setBoardState(newBoard);
@@ -84,7 +85,7 @@ function App() {
     setPhase('board');
 
     console.log(`📍 Mapped ${newMappings.length} detections to board pins`);
-  }, [result]);
+  }, [result, calibrationH]);
 
   const handleSolve = useCallback(() => {
     if (!boardState) return;
@@ -240,10 +241,10 @@ function App() {
 
             <div className="results-grid">
               <div className="card results-image-card">
-                <ResultsOverlay 
-                  image={capturedImage} 
-                  result={result} 
-                  onBoundsChange={setCustomBoardBounds}
+                <ResultsOverlay
+                  image={capturedImage}
+                  result={result}
+                  onCalibrationChange={setCalibrationH}
                 />
               </div>
               <div className="results-sidebar">
@@ -361,7 +362,7 @@ function App() {
                 {/* Detection image preview */}
                 {capturedImage && result && (
                   <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
-                    <ResultsOverlay image={capturedImage} result={result} onBoundsChange={() => {}} />
+                    <ResultsOverlay image={capturedImage} result={result} />
                   </div>
                 )}
               </div>

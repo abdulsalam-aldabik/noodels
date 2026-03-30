@@ -4,6 +4,7 @@ export { ALL_ORIENTATIONS } from './orientations';
 export { ALL_PLACEMENTS, getAvailablePlacements, getAllAvailablePlacements } from './placements';
 export { solve, getHint } from './solver';
 export { mapDetectionsToBoard } from './gridMapper';
+export { computeHomography, applyHomography, REF_PIN_INDICES, REF_PIN_LABELS, REF_PIN_BOARD_COORDS } from './homography';
 export type { Placement } from './placements';
 export type { SolverResult } from './solver';
 export type { PieceMapping } from './gridMapper';
