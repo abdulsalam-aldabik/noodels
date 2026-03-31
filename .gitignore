@@ -28,6 +28,7 @@ yolo_dataset/
 # Roboflow exports inside notebooks
 notebooks/noodels-1/
 notebooks/noodels-2/
+notebooks/noodels-3/
 
 # Base YOLO pretrained weights (re-downloaded by ultralytics)
 notebooks/*.pt

@@ -84,42 +84,55 @@ Each piece has up to 8 distinct orientations (4 rotations × optional reflection
   - `output0`: shape `(1, 300, 38)` — 300 detections × [x1, y1, x2, y2, conf, classId, 32 mask_coeffs]
   - `output1`: shape `(1, 32, 160, 160)` — 32 prototype masks
 
-### Classes (11)
+### Classes (13)
 
-Classes 0–10 correspond to pieces A–K in the color order above. The model was trained to detect pieces **by color** — class 0 = Yellow (A), class 10 = Yellow-Green (K), etc.
+Classes 0–10 correspond to pieces A–K in the color order above. Class 11 is the board segmentation mask. Class 12 is the hinge bounding box.
+
+| Class | Name | Type | Purpose |
+|-------|------|------|---------|
+| 0–10 | A–K pieces | Segmentation mask | Piece detection by color |
+| 11 | `board` | Segmentation mask | Board outline → bounding quad → auto homography |
+| 12 | `hinge` | Bounding box | Top-edge position + rotation → board orientation |
 
 ### Training Pipeline
 
 | Phase | Data | Epochs | mAP@0.5 |
 |-------|------|--------|---------|
-| Phase 1 — Synthetic | 1600 Blender renders (1024×1024) | 100 | 0.9947 |
-| Phase 2 — Real fine-tune | 104 real photos | 50 | 0.9647 |
+| Phase 1 — Synthetic | 1600 Blender renders (1024×1024) | 100 | 0.9947 (11-class) |
+| Phase 2 — Real fine-tune | 104 real photos | 50 | 0.9647 (11-class) |
+
+**Full retrain required:** Adding classes 11+12 requires resizing the YOLO detection head. Must retrain from COCO pretrained weights, not the existing 11-class model.
 
 **Synthetic data details (Blender):**
 - Camera: 15 units above origin, strictly top-down (0° tilt)
 - Pieces randomly placed within radius 3.5 units, full 360° rotation, ±5° tilt
-- Board present in ~25% of images (currently background only, not labelled)
-- Labels: YOLO polygon segmentation format, normalized [0,1]
+- Board + hinge present in ~25% of images (`use_board = random.random() < 0.25`)
+- Labels: YOLO polygon segmentation format for pieces + board; YOLO bbox format for hinge
+- Board mask: Rendered in isolation via Workbench → alpha channel → `cv2.findContours` → polygon
+- Hinge bbox: Rendered in isolation → alpha → bounding box → normalized (cx, cy, w, h)
 
-**Important:** The current model detects piece *type* (color), not position. It does **not** detect the board or hinge.
+### Board + Hinge Implementation in `blender_yolo_generator.py`
 
-### Planned Retraining — Add Board & Hinge Classes
+**Key constants:**
+```python
+HINGE_RADIUS_FRAC = 0.04   # cylinder radius = 4% of board world-space width
+HINGE_DEPTH_FRAC  = 0.05   # protrusion past board edge = 5% of board width
+```
 
-To eliminate manual calibration entirely, the model needs 2 additional classes:
+**Critical design decision — hinge is NOT parented to the board:**
+The `auto_scale_and_flatten()` function applies a rotation to lay the board flat based on its thinnest axis, which scrambles any child object's local-space position. Instead, the hinge is a **standalone object** repositioned in **world space** each frame after the board's transform is applied, using the board's world-space bounding box to find the actual top edge.
 
-| Class | Name | Type | Purpose |
-|-------|------|------|---------|
-| 11 | `board` | Segmentation mask | Board outline → bounding quad → auto homography |
-| 12 | `hinge` | Bounding box | Top-edge position + rotation → board orientation |
+**Key functions:**
+- `create_or_get_hinge()` — creates a unit cylinder (standalone, not parented)
+- `position_hinge_on_board(board_obj)` — positions hinge in world space each frame using board's `matrix_world @ bound_box` corners
+- `render_board_mask(scene, res_x, res_y)` — renders board in isolation → segmentation polygon
+- `render_hinge_bbox(scene, res_x, res_y)` — renders hinge in isolation → YOLO bbox
 
-**The hinge** is a mechanical hinge on the physical board used to open/close the box. It sits at the **top edge** of the board at a fixed position relative to the board centre. Detecting it gives:
-- Which direction is "up" (orientation disambiguation)
-- Approximate top-edge pixel position
-- Board rotation angle
+### Real Data Annotations (Roboflow)
 
-Combined with the board segmentation mask, this enables fully automatic `computeHomography()` with zero user interaction.
+The real photo dataset (`data/noodles_finetune_dataset/`) currently only has piece annotations (classes 0–10). Board and hinge annotations must be added manually in Roboflow. See `ROBOFLOW_ANNOTATION_GUIDE.md` for instructions.
 
-**Implementation in `blender_yolo_generator.py`:** The board mesh is already rendered. Add the hinge as a separate Blender mesh object at the correct physical location. When `board_visible`, label both the board outline and the hinge bbox. Also annotate both in the Roboflow real-data set.
+Until Roboflow annotations are added, Phase 2 fine-tuning trains on pieces only; board+hinge detection relies solely on Phase 1 synthetic pre-training.
 
 ---
 
@@ -252,15 +265,15 @@ by = (H[3]·px + H[4]·py + H[5]) / w
 
 | Issue | Severity | Path to fix |
 |-------|----------|-------------|
-| Manual calibration (4-point drag) | Medium | Retrain with `board` + `hinge` classes → auto homography |
 | Camera tilt > ~30° degrades results | Low–Medium | Homography corrects moderate perspective; wider-angle training data helps |
 | Partially occluded pieces | Medium | More real-data images in Roboflow, especially partially occluded |
 | Only strictly top-down synthetic training | Low | Add ±20° camera tilt variation in Blender generator |
 | Only IQ Noodles supported | — | IQ Puzzler Pro / IQ Waves planned (different grid models, new board classes) |
+| Board+hinge Roboflow annotations missing | Medium | Annotate in Roboflow per ROBOFLOW_ANNOTATION_GUIDE.md |
 
-### Next priority: Automatic calibration via board + hinge detection
+### Automatic calibration via board + hinge detection (in progress)
 
-Once classes 11 (`board`) and 12 (`hinge`) are added:
+Once the 13-class model is trained:
 
 ```
 runInference()
@@ -306,3 +319,67 @@ Original game logic ported from `archive/java_reference/`:
 | `Grid.java` | `board/board.ts` (BoardState) |
 | `Pieces.java` | `board/pieces.ts` |
 | `PieceData.java` | types/pieces |
+
+---
+
+## 10. Board + Hinge Implementation History (2026-03-30/31)
+
+This section documents errors encountered and fixes applied during the board+hinge class implementation to avoid repeating mistakes.
+
+### Files Modified
+
+| File | Change |
+|------|--------|
+| `blender_yolo_generator.py` | Added hinge mesh, board/hinge mask rendering, label writing |
+| `data/yolo_dataset/dataset.yaml` | nc=13, added board+hinge names |
+| `data/noodles_finetune_dataset/dataset.yaml` | nc=13, added board+hinge names + TODO |
+| `notebooks/02_train_phase1_synthetic.ipynb` | NUM_CLASSES=13, ALL_CLASS_NAMES |
+| `notebooks/04_train_phase2_finetune.ipynb` | NUM_CLASSES=13, TODO about Roboflow |
+| `notebooks/05_export_and_evaluate.ipynb` | NUM_CLASSES=13, guarded cls_id lookup |
+| `ROBOFLOW_ANNOTATION_GUIDE.md` | Created — Roboflow annotation instructions |
+| `dataset_viewer.py` | Created — dataset analysis + annotation viewer |
+| `test_board_hinge.py` | Created — quick Blender test for board+hinge |
+
+### Error 1 — FileNotFoundError during training (notebook 02)
+
+**Symptom:** `Dataset 'yolo_dataset/dataset.yaml' images not found, missing path '.../notebooks/images/val'`
+
+**Cause:** `dataset.yaml` had `path: .` which Ultralytics resolved relative to the notebook's CWD (`notebooks/`), not the dataset directory.
+
+**Fix:** Changed `path` to absolute path in both yaml files:
+- `data/yolo_dataset/dataset.yaml` → `path: /home/salumi/projects/project/data/yolo_dataset`
+- `yolo_dataset/dataset.yaml` → `path: /home/salumi/projects/project/yolo_dataset`
+
+### Error 2 — Hinge has 0 instances after generation
+
+**Symptom:** Board (class 11) labels present, but hinge (class 12) had zero instances in the entire dataset.
+
+**Cause:** Original hinge dimensions were absolute board-local units (`HINGE_RADIUS=0.18`, `HINGE_DEPTH=0.35`). The board mesh is hundreds of local units wide. After `auto_scale_and_flatten` scales the board to ~12 world units, the hinge became sub-pixel.
+
+**Fix:** Changed to fractional constants relative to board world-space width:
+```python
+HINGE_RADIUS_FRAC = 0.04   # 4% of board width
+HINGE_DEPTH_FRAC  = 0.05   # 5% of board width
+```
+
+### Error 3 — ModuleNotFoundError in test script
+
+**Symptom:** `ModuleNotFoundError: No module named 'blender_yolo_generator'` when running `test_board_hinge.py`.
+
+**Cause:** `__file__` doesn't resolve reliably in Blender's embedded Python.
+
+**Fix:** Changed `PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))` to `PROJECT_ROOT = os.path.dirname(bpy.data.filepath)`.
+
+### Error 4 — Hinge placement wrong (parenting issue)
+
+**Symptom:** Hinge visible as thin line in renders but bbox extraction fails. Hinge appeared at wrong position/orientation.
+
+**Cause:** The hinge was **parented to the board**. `auto_scale_and_flatten()` applies a rotation based on the thinnest axis to lay the board flat. This rotation scrambles any child object's local-space position — the hinge's local Z offset got rotated to a different axis, making it nearly invisible or edge-on to camera.
+
+**Fix:** Complete rewrite of hinge approach:
+1. `create_or_get_hinge()` creates a **standalone** unit cylinder (NOT parented to board)
+2. New `position_hinge_on_board(board_obj)` positions hinge in **world space** each frame AFTER board transform is applied
+3. Uses `board_obj.matrix_world @ bound_box` corners to find actual world-space top edge
+4. Called from `prepare_hdri_background()` after board transform is set
+
+**Status (2026-03-31):** Fix written to files but NOT YET TESTED. Next step: run `blender --background scene.blend --python test_board_hinge.py`

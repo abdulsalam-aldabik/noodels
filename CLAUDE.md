@@ -62,13 +62,17 @@ ImageCapture → runInference (ONNX/YOLO) → ResultsOverlay (user calibrates 4 
 
 Five Jupyter notebooks for the full training pipeline: synthetic data generation (Blender) → initial YOLO training → real data preparation → fine-tuning → export to ONNX. `blender_yolo_generator.py` drives the Blender scene (`scene.blend`) to render synthetic training images.
 
-**Current model (yolo26n-seg):** Detects 11 piece classes (A–K by color). Does not detect the board.
+**Current model (yolo26n-seg):** 13 classes — 11 piece classes (A–K, indices 0–10) + board (11) + hinge (12).
 
-**Planned retraining — add 2 classes for automatic calibration:**
-- Class 11 `board` — segmentation mask of the board outline (distinctive non-rectangular shape)
-- Class 12 `hinge` — bounding box of the hinge at the top of the board (determines orientation)
+**Class 11 `board`:** Segmentation polygon of the full board outline. Generated in Blender by rendering the board in isolation and extracting the contour via `cv2.findContours`. Working correctly.
 
-The hinge is a physically distinctive mechanical feature at the **top edge** of the board. Detecting it gives the board's top-edge position and rotation, enabling fully automatic homography computation with zero user interaction. The board mask alone may also be sufficient (fit bounding quad to mask → 4 corners → homography). In `blender_yolo_generator.py` the board is already rendered in 25% of images; the hinge needs to be added as a separate Blender mesh object with its own label.
+**Class 12 `hinge`:** Bounding box of the barrel hinge at the top of the board. The hinge is a full-width cylindrical bar spanning the entire top edge (the physical hinge that opens/closes the box). It determines board orientation ("which edge is up"). **Not generated in synthetic data** — the Blender cylinder doesn't look realistic enough. Hinge annotations come from real photos only (Roboflow fine-tuning dataset).
+
+**Important implementation detail — hinge positioning:** The hinge must NOT be parented to the board in Blender. `auto_scale_and_flatten()` applies a rotation to lay the board flat (based on its thinnest axis), which scrambles any child's local-space position. Instead, the hinge is a standalone object repositioned in world space each frame after the board's transform is applied, using the board's world-space bounding box to find the actual top edge.
+
+**Training pipeline:** Full retrain from COCO pretrained weights (not the old 11-class model) because adding classes requires resizing the YOLO detection head. Phase 1 trains on 13-class synthetic data (pieces + board only, no hinge). Phase 2 fine-tunes on real photos with all 13 classes (board + hinge annotations added in Roboflow — see `ROBOFLOW_ANNOTATION_GUIDE.md`).
+
+**Test script:** `test_board_hinge.py` — renders 5 test frames with board+hinge visible, validates mask extraction, saves annotated previews to `test_output/`. Run before full dataset generation to verify hinge placement.
 
 ### Planned Backend (not yet implemented)
 

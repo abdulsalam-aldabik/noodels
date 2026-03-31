@@ -57,14 +57,13 @@ PLACEMENT_RADIUS = 3.5
 MAX_TILT_DEGREES = 5.0
 MAX_PLACEMENT_RETRIES = 500
 
-HINGE_NAME    = "hinge"
-CLASS_BOARD   = 11
-CLASS_HINGE   = 12
-# Hinge is a full-width cylinder running across the ENTIRE top edge of the board
-# (like the physical barrel hinge visible in real photos).
-# HINGE_RADIUS and HINGE_DEPTH are in board-local units (scale proportionally with the board).
-HINGE_RADIUS  = 0.18   # cylinder radius — approximate barrel hinge thickness
-HINGE_DEPTH   = 0.35   # how far the cylinder protrudes from the board edge along Y
+HINGE_NAME          = "hinge"
+CLASS_BOARD         = 11
+CLASS_HINGE         = 12
+# Fractions of the board's local X width — scale-independent so they work
+# regardless of how large the board mesh is in scene.blend.
+HINGE_RADIUS_FRAC   = 0.04   # cylinder radius = 4% of board width  (~0.48 wu when board = 12)
+HINGE_DEPTH_FRAC    = 0.05   # protrusion past board edge = 5% of board width
 
 HDRI_DIR = bpy.path.abspath("//hdri_env")  
 AUTO_DOWNLOAD_HDRIS = [
@@ -211,10 +210,12 @@ def prepare_hdri_background(use_board, hdri_images):
             board.rotation_euler = (yaw_matrix @ board_rot_matrix).to_euler()
             board.location = (0, 0, -5.0)
 
+    # Hinge is NOT rendered in synthetic data — it doesn't look realistic enough.
+    # Hinge annotations come from real photos only (Roboflow fine-tuning data).
     hinge = bpy.data.objects.get(HINGE_NAME)
     if hinge:
-        hinge.hide_render   = not use_board
-        hinge.hide_viewport = not use_board
+        hinge.hide_render   = True
+        hinge.hide_viewport = True
     
     if hdri_images:
         env_node = world.node_tree.nodes.new('ShaderNodeTexEnvironment')
@@ -332,52 +333,71 @@ def extract_polygon_from_mask(mask):
     pts = approx.reshape(-1, 2).astype(float)
     return [(x / w, y / h) for x, y in pts]
 
-def create_or_get_hinge(board_obj):
-    """Create a full-width cylinder hinge mesh and parent it to the board's top edge.
+def create_or_get_hinge():
+    """Create the hinge cylinder mesh (standalone, NOT parented to board).
 
-    The physical IQ Noodles hinge is a barrel hinge that runs the entire width of the
-    board. We model it as a cylinder whose X-axis equals the board's full local width.
-    Dimensions are in board-local units and scale proportionally with the board when
-    auto_scale_and_flatten is applied.
+    The hinge is positioned in world space each frame by position_hinge_on_board()
+    after the board's auto_scale_and_flatten + yaw rotation are applied. This avoids
+    the problem of auto_scale_and_flatten's flatten rotation scrambling the hinge's
+    local-space position.
 
-    Call once during scene setup, BEFORE any auto_scale_and_flatten transforms.
+    The cylinder is created at the world origin with unit dimensions — it gets
+    repositioned and rescaled every frame.
     """
     if bpy.data.objects.get(HINGE_NAME):
-        return  # Already exists (idempotent — safe on re-run)
+        return  # Already exists
 
-    # Read board bounding box in LOCAL space before auto_scale_and_flatten.
-    bb = board_obj.bound_box  # 8 corners in local coordinates
-    local_min_x   = min(c[0] for c in bb)
-    local_max_x   = max(c[0] for c in bb)
-    local_width   = local_max_x - local_min_x       # board's full local X extent
-    local_top_y   = min(c[1] for c in bb)           # min Y = top edge (camera top-down, yaw=0)
-    local_surf_z  = max(c[2] for c in bb)           # upper board surface in local Z
-
-    # Create cylinder: depth along X (the board's width axis), radius approximates barrel thickness
-    # Blender primitive_cylinder_add: by default depth is along Z, vertices around Z-axis.
-    # We'll rotate it 90° around Y to lay the depth along X.
     bpy.ops.mesh.primitive_cylinder_add(
-        radius=HINGE_RADIUS,
-        depth=local_width,       # spans full board width
-        vertices=16,
-        location=(0, 0, 0)
+        radius=1.0, depth=1.0, vertices=16, location=(0, 0, 0)
     )
     hinge = bpy.context.active_object
     hinge.name = HINGE_NAME
 
-    # Rotate 90° around Y so the cylinder's length axis aligns with board X
-    hinge.rotation_euler = (0, math.radians(90), 0)
-
-    # Parent to board with identity inverse — hinge.location is in board-local space
-    hinge.parent = board_obj
-    hinge.matrix_parent_inverse = mathutils.Matrix.Identity(4)
-
-    # Sit the cylinder centre at the board's top edge, at board-surface height
-    hinge.location = (0.0, local_top_y - HINGE_DEPTH / 2.0, local_surf_z + HINGE_RADIUS)
-
     apply_color_to_obj(hinge, BOARD_COLOR)
     hinge.hide_render   = True
     hinge.hide_viewport = True
+
+
+def position_hinge_on_board(board_obj):
+    """Position + scale the hinge in world space using the board's current world bbox.
+
+    Call AFTER board.location / rotation_euler / scale are set for this frame.
+    Reads the board's 8 world-space bounding-box corners to find:
+      - the actual world width (extent perpendicular to the top edge)
+      - the top edge centre (minimum Y in world-space = top of image)
+      - the board surface Z (maximum Z = closest to camera)
+    Then places the hinge cylinder along that edge.
+    """
+    hinge = bpy.data.objects.get(HINGE_NAME)
+    if not hinge:
+        return
+
+    bpy.context.view_layer.update()  # ensure matrix_world is current
+
+    # Board world-space corners
+    corners = [board_obj.matrix_world @ mathutils.Vector(c) for c in board_obj.bound_box]
+    wx = [c.x for c in corners]
+    wy = [c.y for c in corners]
+    wz = [c.z for c in corners]
+
+    board_w     = max(wx) - min(wx)          # world width along X
+    board_h     = max(wy) - min(wy)          # world height along Y
+    board_top_y = min(wy)                    # min Y = top of image (camera looks -Z)
+    board_ctr_x = (min(wx) + max(wx)) / 2.0
+    board_surf_z = max(wz)                   # top surface (closest to camera)
+
+    hinge_radius = board_w * HINGE_RADIUS_FRAC
+    hinge_len    = board_w  # spans full board width
+
+    # Place hinge: centred on board X, at top Y edge, just above surface
+    hinge.location = (board_ctr_x, board_top_y - hinge_radius, board_surf_z + hinge_radius)
+    # Scale: unit cylinder (radius=1, depth=1) → desired size
+    hinge.scale = (hinge_len / 2.0, hinge_radius, hinge_radius)
+    # Rotate cylinder so its length axis is along world X (perpendicular to camera-up)
+    hinge.rotation_euler = (math.radians(90), 0, 0)
+
+    hinge.hide_render   = False
+    hinge.hide_viewport = False
 
 
 def _render_single_object_mask(obj_name, scene, res_x, res_y):
@@ -528,9 +548,8 @@ def generate_dataset():
     center_origins_to_geometry()
     setup_materials()
 
-    board = bpy.data.objects.get(BOARD_NAME)
-    if board:
-        create_or_get_hinge(board)
+    # Hinge is not used in synthetic data (only in real photo annotations).
+    # create_or_get_hinge() is available for test_board_hinge.py but not called here.
 
     scene.use_nodes = False
     hide_all_pieces()
@@ -648,11 +667,8 @@ def generate_dataset():
                     coords = " ".join(f"{x:.6f} {y:.6f}" for x, y in board_poly)
                     f.write(f"{CLASS_BOARD} {coords}\n")
 
-                # Class 12: hinge bounding box (cx cy w h, normalised)
-                hinge_bb = render_hinge_bbox(scene, RES_X, RES_Y)
-                if hinge_bb:
-                    cx, cy, w, h = hinge_bb
-                    f.write(f"{CLASS_HINGE} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}\n")
+                # Class 12 (hinge) is NOT labelled in synthetic data.
+                # Hinge annotations come from real photos only (Roboflow).
 
         print(f"[{i+1}/{TOTAL_IMAGES}] Saved Image and Generated Segmentations: {img_filename} in '{split}'")
 
