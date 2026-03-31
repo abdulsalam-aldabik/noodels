@@ -53,9 +53,18 @@ BOARD_NAME = "board"
 BOARD_COLOR = (40, 42, 45) 
 DYNAMIC_PIECE_TARGET_SIZE = 1.0  
 DYNAMIC_BOARD_TARGET_SIZE = 12.0 
-PLACEMENT_RADIUS = 3.5 
+PLACEMENT_RADIUS = 3.5
 MAX_TILT_DEGREES = 5.0
 MAX_PLACEMENT_RETRIES = 500
+
+HINGE_NAME    = "hinge"
+CLASS_BOARD   = 11
+CLASS_HINGE   = 12
+# Hinge is a full-width cylinder running across the ENTIRE top edge of the board
+# (like the physical barrel hinge visible in real photos).
+# HINGE_RADIUS and HINGE_DEPTH are in board-local units (scale proportionally with the board).
+HINGE_RADIUS  = 0.18   # cylinder radius — approximate barrel hinge thickness
+HINGE_DEPTH   = 0.35   # how far the cylinder protrudes from the board edge along Y
 
 HDRI_DIR = bpy.path.abspath("//hdri_env")  
 AUTO_DOWNLOAD_HDRIS = [
@@ -81,6 +90,8 @@ with open(os.path.join(OUTPUT_DIR, "dataset.yaml"), "w") as f:
     for i, name in enumerate(PIECE_NAMES):
         label_class = PIECE_COLORS[name][0]
         f.write(f"  {i}: {label_class}\n")
+    f.write(f"  {CLASS_BOARD}: board\n")
+    f.write(f"  {CLASS_HINGE}: hinge\n")
 
 # ================= Setup HDRI =================
 def download_hdris_if_missing():
@@ -198,7 +209,12 @@ def prepare_hdri_background(use_board, hdri_images):
             board_rot_matrix = auto_scale_and_flatten(board, target_size=DYNAMIC_BOARD_TARGET_SIZE)
             yaw_matrix = mathutils.Euler((0, 0, math.radians(random.choice([0, 90, 180, 270])))).to_matrix()
             board.rotation_euler = (yaw_matrix @ board_rot_matrix).to_euler()
-            board.location = (0, 0, -5.0) 
+            board.location = (0, 0, -5.0)
+
+    hinge = bpy.data.objects.get(HINGE_NAME)
+    if hinge:
+        hinge.hide_render   = not use_board
+        hinge.hide_viewport = not use_board
     
     if hdri_images:
         env_node = world.node_tree.nodes.new('ShaderNodeTexEnvironment')
@@ -223,10 +239,14 @@ def render_piece_masks(active_pieces, scene, res_x, res_y):
     orig_transparent = scene.render.film_transparent
     orig_view_transform = scene.view_settings.view_transform
     
-    # Hide board and HDRI
+    # Hide board, hinge, and HDRI
     if bpy.data.objects.get(BOARD_NAME):
         orig_board_hide = bpy.data.objects.get(BOARD_NAME).hide_render
         bpy.data.objects.get(BOARD_NAME).hide_render = True
+    hinge_obj = bpy.data.objects.get(HINGE_NAME)
+    if hinge_obj:
+        orig_hinge_hide = hinge_obj.hide_render
+        hinge_obj.hide_render = True
     
     world = scene.world
     orig_world_nodes = world.use_nodes
@@ -283,6 +303,8 @@ def render_piece_masks(active_pieces, scene, res_x, res_y):
     world.use_nodes = orig_world_nodes
     if bpy.data.objects.get(BOARD_NAME):
         bpy.data.objects.get(BOARD_NAME).hide_render = orig_board_hide
+    if hinge_obj:
+        hinge_obj.hide_render = orig_hinge_hide
     
     try:
         shading = scene.display.shading
@@ -309,6 +331,159 @@ def extract_polygon_from_mask(mask):
     
     pts = approx.reshape(-1, 2).astype(float)
     return [(x / w, y / h) for x, y in pts]
+
+def create_or_get_hinge(board_obj):
+    """Create a full-width cylinder hinge mesh and parent it to the board's top edge.
+
+    The physical IQ Noodles hinge is a barrel hinge that runs the entire width of the
+    board. We model it as a cylinder whose X-axis equals the board's full local width.
+    Dimensions are in board-local units and scale proportionally with the board when
+    auto_scale_and_flatten is applied.
+
+    Call once during scene setup, BEFORE any auto_scale_and_flatten transforms.
+    """
+    if bpy.data.objects.get(HINGE_NAME):
+        return  # Already exists (idempotent — safe on re-run)
+
+    # Read board bounding box in LOCAL space before auto_scale_and_flatten.
+    bb = board_obj.bound_box  # 8 corners in local coordinates
+    local_min_x   = min(c[0] for c in bb)
+    local_max_x   = max(c[0] for c in bb)
+    local_width   = local_max_x - local_min_x       # board's full local X extent
+    local_top_y   = min(c[1] for c in bb)           # min Y = top edge (camera top-down, yaw=0)
+    local_surf_z  = max(c[2] for c in bb)           # upper board surface in local Z
+
+    # Create cylinder: depth along X (the board's width axis), radius approximates barrel thickness
+    # Blender primitive_cylinder_add: by default depth is along Z, vertices around Z-axis.
+    # We'll rotate it 90° around Y to lay the depth along X.
+    bpy.ops.mesh.primitive_cylinder_add(
+        radius=HINGE_RADIUS,
+        depth=local_width,       # spans full board width
+        vertices=16,
+        location=(0, 0, 0)
+    )
+    hinge = bpy.context.active_object
+    hinge.name = HINGE_NAME
+
+    # Rotate 90° around Y so the cylinder's length axis aligns with board X
+    hinge.rotation_euler = (0, math.radians(90), 0)
+
+    # Parent to board with identity inverse — hinge.location is in board-local space
+    hinge.parent = board_obj
+    hinge.matrix_parent_inverse = mathutils.Matrix.Identity(4)
+
+    # Sit the cylinder centre at the board's top edge, at board-surface height
+    hinge.location = (0.0, local_top_y - HINGE_DEPTH / 2.0, local_surf_z + HINGE_RADIUS)
+
+    apply_color_to_obj(hinge, BOARD_COLOR)
+    hinge.hide_render   = True
+    hinge.hide_viewport = True
+
+
+def _render_single_object_mask(obj_name, scene, res_x, res_y):
+    """Render one mesh object in isolation using Workbench. Returns a boolean mask or None."""
+    obj = bpy.data.objects.get(obj_name)
+    if not obj:
+        return None
+
+    # Save visibility state for all mesh objects
+    orig_hide = {o.name: o.hide_render for o in bpy.data.objects if o.type == 'MESH'}
+    orig_filepath      = scene.render.filepath
+    orig_engine        = scene.render.engine
+    orig_transparent   = scene.render.film_transparent
+    orig_view_transform = scene.view_settings.view_transform
+    world = scene.world
+    orig_world_nodes   = world.use_nodes
+
+    # Hide every mesh object, then reveal only the target
+    for o in bpy.data.objects:
+        if o.type == 'MESH':
+            o.hide_render = True
+    obj.hide_render  = False
+    world.use_nodes  = False
+
+    scene.render.engine          = 'BLENDER_WORKBENCH'
+    scene.render.film_transparent = True
+    scene.view_settings.view_transform = 'Raw'
+
+    orig_shading = {}
+    try:
+        shading = scene.display.shading
+        orig_shading = {
+            'light': shading.light, 'color_type': shading.color_type,
+            'background_type': shading.background_type,
+            'background_color': shading.background_color[:],
+            'render_aa': scene.display.render_aa,
+        }
+        shading.light            = 'FLAT'
+        shading.color_type       = 'SINGLE'
+        shading.single_color     = (1, 1, 1)
+        shading.background_type  = 'VIEWPORT'
+        shading.background_color = (0, 0, 0)
+        scene.display.render_aa  = 'OFF'
+    except Exception:
+        pass
+
+    temp_path = os.path.join(bpy.path.abspath("//"), f"__mask_{obj_name}__.png")
+    scene.render.filepath = temp_path
+    bpy.ops.render.render(write_still=True)
+
+    bimg = bpy.data.images.load(temp_path, check_existing=False)
+    pix  = np.zeros(res_x * res_y * 4, dtype=np.float32)
+    bimg.pixels.foreach_get(pix)
+    px   = pix.reshape(res_y, res_x, 4)
+    mask = np.flipud(px[:, :, 3] > 0.5)
+    bpy.data.images.remove(bimg)
+    os.remove(temp_path)
+
+    # Restore all state
+    for o in bpy.data.objects:
+        if o.type == 'MESH' and o.name in orig_hide:
+            o.hide_render = orig_hide[o.name]
+    scene.render.filepath               = orig_filepath
+    scene.render.engine                 = orig_engine
+    scene.render.film_transparent       = orig_transparent
+    scene.view_settings.view_transform  = orig_view_transform
+    world.use_nodes                     = orig_world_nodes
+    try:
+        if orig_shading:
+            shading = scene.display.shading
+            shading.light            = orig_shading['light']
+            shading.color_type       = orig_shading['color_type']
+            shading.background_type  = orig_shading['background_type']
+            shading.background_color = orig_shading['background_color']
+            scene.display.render_aa  = orig_shading['render_aa']
+    except Exception:
+        pass
+
+    return mask
+
+
+def render_board_mask(scene, res_x, res_y):
+    """Return a YOLO segmentation polygon for the board, or None if board not found."""
+    mask = _render_single_object_mask(BOARD_NAME, scene, res_x, res_y)
+    if mask is None:
+        return None
+    return extract_polygon_from_mask(mask)
+
+
+def render_hinge_bbox(scene, res_x, res_y):
+    """Return normalised YOLO bbox (cx, cy, w, h) for the hinge, or None."""
+    mask = _render_single_object_mask(HINGE_NAME, scene, res_x, res_y)
+    if mask is None:
+        return None
+    rows = np.any(mask, axis=1)
+    cols = np.any(mask, axis=0)
+    if not rows.any() or not cols.any():
+        return None
+    y1, y2 = np.where(rows)[0][[0, -1]]
+    x1, x2 = np.where(cols)[0][[0, -1]]
+    cx = (x1 + x2) / (2.0 * res_x)
+    cy = (y1 + y2) / (2.0 * res_y)
+    w  = (x2 - x1) / float(res_x)
+    h  = (y2 - y1) / float(res_y)
+    return (cx, cy, w, h)
+
 
 # ================= Main Generator =================
 def generate_dataset():
@@ -352,8 +527,12 @@ def generate_dataset():
     download_hdris_if_missing()
     center_origins_to_geometry()
     setup_materials()
-    
-    scene.use_nodes = False 
+
+    board = bpy.data.objects.get(BOARD_NAME)
+    if board:
+        create_or_get_hinge(board)
+
+    scene.use_nodes = False
     hide_all_pieces()
     
     hdri_images = glob.glob(os.path.join(HDRI_DIR, "*.exr")) + glob.glob(os.path.join(HDRI_DIR, "*.hdr"))
@@ -461,6 +640,19 @@ def generate_dataset():
                 coords = " ".join(f"{x:.6f} {y:.6f}" for x, y in poly)
                 class_id = CLASS_MAP[p_name]
                 f.write(f"{class_id} {coords}\n")
+
+            if use_board:
+                # Class 11: board segmentation polygon
+                board_poly = render_board_mask(scene, RES_X, RES_Y)
+                if board_poly:
+                    coords = " ".join(f"{x:.6f} {y:.6f}" for x, y in board_poly)
+                    f.write(f"{CLASS_BOARD} {coords}\n")
+
+                # Class 12: hinge bounding box (cx cy w h, normalised)
+                hinge_bb = render_hinge_bbox(scene, RES_X, RES_Y)
+                if hinge_bb:
+                    cx, cy, w, h = hinge_bb
+                    f.write(f"{CLASS_HINGE} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}\n")
 
         print(f"[{i+1}/{TOTAL_IMAGES}] Saved Image and Generated Segmentations: {img_filename} in '{split}'")
 
