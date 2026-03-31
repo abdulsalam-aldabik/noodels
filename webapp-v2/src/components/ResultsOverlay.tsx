@@ -1,26 +1,23 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import type { InferenceResult, Detection } from '../types';
+import { computeHomography, REF_PIN_LABELS, REF_PIN_BOARD_COORDS } from '../board/homography';
 
 interface ResultsOverlayProps {
   image: HTMLImageElement;
   result: InferenceResult;
-  onBoundsChange?: (bounds: { minX: number; minY: number; width: number; height: number }) => void;
+  /** Called with the computed 9-element homography matrix whenever a point moves. */
+  onCalibrationChange?: (H: number[]) => void;
 }
 
-export interface BoardBounds {
-  minX: number;
-  minY: number;
-  width: number;
-  height: number;
-}
+// ─── Initial position helpers ─────────────────────────────────────────────────
 
 /**
- * Helper to estimate initial board bounds from detections.
+ * Estimate rectangular board bounds from detection bounding boxes (+ 20% padding).
  */
-function estimateBoardBounds(detections: Detection[]): BoardBounds {
-  if (detections.length === 0) {
-    return { minX: 100, minY: 100, width: 400, height: 400 };
-  }
+function estimateBoundsFromDetections(detections: Detection[]): {
+  minX: number; minY: number; width: number; height: number;
+} {
+  if (detections.length === 0) return { minX: 100, minY: 100, width: 400, height: 400 };
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   for (const det of detections) {
     const [x1, y1, x2, y2] = det.bbox;
@@ -31,157 +28,162 @@ function estimateBoardBounds(detections: Detection[]): BoardBounds {
   }
   const bw = maxX - minX;
   const bh = maxY - minY;
-  const padX = bw * 0.2;
-  const padY = bh * 0.2;
-
   return {
-    minX: Math.max(0, minX - padX),
-    minY: Math.max(0, minY - padY),
-    width: bw + 2 * padX,
-    height: bh + 2 * padY,
+    minX: Math.max(0, minX - bw * 0.2),
+    minY: Math.max(0, minY - bh * 0.2),
+    width: bw * 1.4,
+    height: bh * 1.4,
   };
 }
 
 /**
- * Interactive canvas overlay for detections + a draggable board calibration box.
+ * Project the 4 reference pins from board-space to pixel-space using linear mapping.
+ * This gives reasonable starting positions that the user can then fine-tune.
  */
-export function ResultsOverlay({ image, result, onBoundsChange }: ResultsOverlayProps) {
+function initialRefPoints(
+  detections: Detection[],
+  imgW: number,
+  imgH: number,
+): [number, number][] {
+  const bounds = estimateBoundsFromDetections(detections);
+  const PIN_MIN = -7.9;
+  const PIN_RANGE = 15.8;
+  return REF_PIN_BOARD_COORDS.map(([bx, by]) => {
+    const px = bounds.minX + ((bx - PIN_MIN) / PIN_RANGE) * bounds.width;
+    const py = bounds.minY + ((by - PIN_MIN) / PIN_RANGE) * bounds.height;
+    return [
+      Math.max(0, Math.min(imgW, px)),
+      Math.max(0, Math.min(imgH, py)),
+    ] as [number, number];
+  });
+}
+
+// ─── Component ────────────────────────────────────────────────────────────────
+
+/**
+ * Interactive detection overlay with 4-point perspective calibration.
+ *
+ * The user drags 4 labelled reference dots to their corresponding physical pin
+ * locations on the board in the photo. The component computes and emits a
+ * perspective homography H (pixel → board space) whenever a point moves.
+ *
+ * Reference pins (board-space):
+ *   Top   (pin  0): (-1.8, -5.6)
+ *   Right (pin  8): ( 5.4, -1.8)
+ *   Left  (pin 12): (-5.4,  1.8)
+ *   Bottom(pin 20): ( 1.8,  5.4)
+ */
+export function ResultsOverlay({ image, result, onCalibrationChange }: ResultsOverlayProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
-  // The calibration box coordinates (in image pixel space)
-  const [bounds, setBounds] = useState<BoardBounds>(() => estimateBoardBounds(result.detections));
+  const { width: imgW, height: imgH } = result.originalSize;
 
-  // Report bounds up to App
+  // 4 draggable reference points in image-pixel space
+  const [refPoints, setRefPoints] = useState<[number, number][]>(() =>
+    initialRefPoints(result.detections, imgW, imgH),
+  );
+
+  const [activeIdx, setActiveIdx] = useState<number | null>(null);
+
+  // Compute and emit homography whenever points change
   useEffect(() => {
-    onBoundsChange?.(bounds);
-  }, [bounds, onBoundsChange]);
-
-  // Handle resizing / dragging logic
-  const [activeHandle, setActiveHandle] = useState<string | null>(null);
-
-  const handlePointerDown = (e: React.PointerEvent, handle: string) => {
-    e.preventDefault();
-    setActiveHandle(handle);
-    (e.target as Element).setPointerCapture(e.pointerId);
-  };
-
-  const handlePointerMove = (e: React.PointerEvent) => {
-    if (!activeHandle || !containerRef.current) return;
-
-    const rect = containerRef.current.getBoundingClientRect();
-    // Convert mouse coordinates to image pixel space
-    const scaleX = result.originalSize.width / rect.width;
-    const scaleY = result.originalSize.height / rect.height;
-
-    const mx = (e.clientX - rect.left) * scaleX;
-    const my = (e.clientY - rect.top) * scaleY;
-
-    setBounds((prev) => {
-      let { minX, minY, width, height } = prev;
-      let maxX = minX + width;
-      let maxY = minY + height;
-
-      if (activeHandle === 'tl') {
-        minX = Math.min(mx, maxX - 20);
-        minY = Math.min(my, maxY - 20);
-      } else if (activeHandle === 'tr') {
-        maxX = Math.max(mx, minX + 20);
-        minY = Math.min(my, maxY - 20);
-      } else if (activeHandle === 'bl') {
-        minX = Math.min(mx, maxX - 20);
-        maxY = Math.max(my, minY + 20);
-      } else if (activeHandle === 'br') {
-        maxX = Math.max(mx, minX + 20);
-        maxY = Math.max(my, minY + 20);
-      } else if (activeHandle === 'move') {
-        // Just moving the whole box
-        // To do this perfectly we need the start offset, but a simpler way:
-        minX += e.movementX * scaleX;
-        minY += e.movementY * scaleY;
-        maxX = minX + width;
-        maxY = minY + height;
-      }
-
-      // Constrain to image bounds
-      minX = Math.max(0, Math.min(minX, result.originalSize.width - width));
-      minY = Math.max(0, Math.min(minY, result.originalSize.height - height));
-
-      return {
-        minX,
-        minY,
-        width: maxX - minX,
-        height: maxY - minY,
-      };
-    });
-  };
-
-  const handlePointerUp = (e: React.PointerEvent) => {
-    if (activeHandle) {
-      setActiveHandle(null);
-      (e.target as Element).releasePointerCapture(e.pointerId);
+    if (!onCalibrationChange) return;
+    try {
+      const H = computeHomography(refPoints as [number, number][]);
+      onCalibrationChange(H);
+    } catch {
+      // Points may be temporarily collinear during drag — ignore
     }
-  };
+  }, [refPoints, onCalibrationChange]);
 
-  // Render the static canvas (image + masks + boxes)
+  // ── Drag handlers ──
+  const handlePointerDown = useCallback((e: React.PointerEvent, idx: number) => {
+    e.preventDefault();
+    setActiveIdx(idx);
+    (e.target as Element).setPointerCapture(e.pointerId);
+  }, []);
+
+  const handlePointerMove = useCallback(
+    (e: React.PointerEvent) => {
+      if (activeIdx === null || !containerRef.current) return;
+      const rect = containerRef.current.getBoundingClientRect();
+      const scaleX = imgW / rect.width;
+      const scaleY = imgH / rect.height;
+      const mx = Math.max(0, Math.min(imgW, (e.clientX - rect.left) * scaleX));
+      const my = Math.max(0, Math.min(imgH, (e.clientY - rect.top) * scaleY));
+      setRefPoints((prev) => {
+        const next = prev.map((p, i) => (i === activeIdx ? ([mx, my] as [number, number]) : p));
+        return next;
+      });
+    },
+    [activeIdx, imgW, imgH],
+  );
+
+  const handlePointerUp = useCallback(
+    (e: React.PointerEvent) => {
+      if (activeIdx !== null) {
+        setActiveIdx(null);
+        (e.target as Element).releasePointerCapture(e.pointerId);
+      }
+    },
+    [activeIdx],
+  );
+
+  // ── Static canvas: image + masks + boxes ──
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const { width, height } = result.originalSize;
-    canvas.width = width;
-    canvas.height = height;
+    canvas.width = imgW;
+    canvas.height = imgH;
+    ctx.drawImage(image, 0, 0, imgW, imgH);
 
-    // Base image
-    ctx.drawImage(image, 0, 0, width, height);
-
-    // Masks
     for (const det of result.detections) {
       if (det.mask) {
-        const tempCanvas = document.createElement('canvas');
-        tempCanvas.width = width;
-        tempCanvas.height = height;
-        const tempCtx = tempCanvas.getContext('2d')!;
-        tempCtx.putImageData(det.mask, 0, 0);
-        ctx.drawImage(tempCanvas, 0, 0);
+        const tmp = document.createElement('canvas');
+        tmp.width = imgW;
+        tmp.height = imgH;
+        tmp.getContext('2d')!.putImageData(det.mask, 0, 0);
+        ctx.drawImage(tmp, 0, 0);
       }
     }
 
-    // Boxes & Labels
     for (const det of result.detections) {
       const [x1, y1, x2, y2] = det.bbox;
       const [r, g, b] = det.rgb;
-
-      ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, 0.5)`;
-      ctx.lineWidth = Math.max(2, Math.min(width, height) * 0.003);
+      ctx.strokeStyle = `rgba(${r},${g},${b},0.5)`;
+      ctx.lineWidth = Math.max(2, Math.min(imgW, imgH) * 0.003);
       ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
 
-      const labelText = `${det.label} ${(det.confidence * 100).toFixed(0)}%`;
-      const fontSize = Math.max(12, Math.min(width, height) * 0.02);
+      const fontSize = Math.max(12, Math.min(imgW, imgH) * 0.02);
       ctx.font = `600 ${fontSize}px Inter, sans-serif`;
-      const textMetrics = ctx.measureText(labelText);
-      const labelPadX = fontSize * 0.3;
-      const labelPadY = fontSize * 0.15;
-      const labelH = fontSize + labelPadY * 2;
-      const labelW = textMetrics.width + labelPadX * 2;
-
-      const labelY = y1 - labelH > 0 ? y1 - labelH : y1;
-      ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.85)`;
+      const labelText = `${det.label} ${(det.confidence * 100).toFixed(0)}%`;
+      const tw = ctx.measureText(labelText).width;
+      const padX = fontSize * 0.3;
+      const padY = fontSize * 0.15;
+      const lh = fontSize + padY * 2;
+      const lw = tw + padX * 2;
+      const ly = y1 - lh > 0 ? y1 - lh : y1;
+      ctx.fillStyle = `rgba(${r},${g},${b},0.85)`;
       ctx.beginPath();
-      ctx.roundRect(x1, labelY, labelW, labelH, [4, 4, 0, 0]);
+      ctx.roundRect(x1, ly, lw, lh, [4, 4, 0, 0]);
       ctx.fill();
-
-      ctx.fillStyle = '#ffffff';
+      ctx.fillStyle = '#fff';
       ctx.textBaseline = 'bottom';
-      ctx.fillText(labelText, x1 + labelPadX, labelY + labelH - labelPadY);
+      ctx.fillText(labelText, x1 + padX, ly + lh - padY);
     }
-  }, [image, result]);
+  }, [image, result, imgW, imgH]);
 
-  // Helper to convert image pixel coordinates to CSS percentages for the SVG overlay
-  const toPctX = (x: number) => (x / result.originalSize.width) * 100;
-  const toPctY = (y: number) => (y / result.originalSize.height) * 100;
+  // ── Coordinate helpers (image-pixel → CSS-percentage) ──
+  const toPctX = (x: number) => `${(x / imgW) * 100}%`;
+  const toPctY = (y: number) => `${(y / imgH) * 100}%`;
+
+  // Colors and shapes for the 4 reference points
+  const pointColors = ['#ff4d6d', '#4cc9f0', '#f8961e', '#90be6d'];
+  const [tp, rp, lp, bp] = refPoints;
 
   return (
     <div
@@ -190,9 +192,13 @@ export function ResultsOverlay({ image, result, onBoundsChange }: ResultsOverlay
       id="results-overlay"
       style={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden' }}
     >
-      <canvas ref={canvasRef} className="results-canvas" style={{ display: 'block', width: '100%', height: 'auto' }} />
+      <canvas
+        ref={canvasRef}
+        className="results-canvas"
+        style={{ display: 'block', width: '100%', height: 'auto' }}
+      />
 
-      {/* Interactive Calibration Overlay */}
+      {/* SVG Calibration Overlay */}
       <svg
         style={{
           position: 'absolute',
@@ -200,75 +206,102 @@ export function ResultsOverlay({ image, result, onBoundsChange }: ResultsOverlay
           left: 0,
           width: '100%',
           height: '100%',
-          pointerEvents: 'none', // Let touches pass through except on our specific handles
+          pointerEvents: 'none',
         }}
       >
-        <defs>
-          <pattern id="gridPattern" width="14.28%" height="14.28%">
-            <rect width="100%" height="100%" fill="none" stroke="rgba(255,255,255,0.1)" strokeWidth="1" />
-          </pattern>
-        </defs>
-
         <g
           style={{ pointerEvents: 'auto', touchAction: 'none' }}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
           onPointerLeave={handlePointerUp}
         >
-          {/* Main Board Area (Draggable) */}
-          <rect
-            x={`${toPctX(bounds.minX)}%`}
-            y={`${toPctY(bounds.minY)}%`}
-            width={`${toPctX(bounds.width)}%`}
-            height={`${toPctY(bounds.height)}%`}
-            fill="rgba(0, 150, 255, 0.1)"
-            stroke="#00aaff"
-            strokeWidth="2"
-            strokeDasharray="4 4"
-            onPointerDown={(e) => handlePointerDown(e, 'move')}
-            style={{ cursor: 'move' }}
-          />
-
-          {/* Grid lines inside the board area to help user align the pins */}
-          <rect
-            x={`${toPctX(bounds.minX)}%`}
-            y={`${toPctY(bounds.minY)}%`}
-            width={`${toPctX(bounds.width)}%`}
-            height={`${toPctY(bounds.height)}%`}
-            fill="url(#gridPattern)"
+          {/* Calibration quadrilateral */}
+          <polygon
+            points={[tp, rp, bp, lp]
+              .map(([x, y]) => `${toPctX(x)},${toPctY(y)}`)
+              .join(' ')}
+            fill="rgba(0,170,255,0.06)"
+            stroke="rgba(0,170,255,0.5)"
+            strokeWidth="1.5"
+            strokeDasharray="6 4"
             pointerEvents="none"
           />
 
-          {/* Corner Handles */}
-          {[
-            { id: 'tl', x: bounds.minX, y: bounds.minY, cursor: 'nwse-resize' },
-            { id: 'tr', x: bounds.minX + bounds.width, y: bounds.minY, cursor: 'nesw-resize' },
-            { id: 'bl', x: bounds.minX, y: bounds.minY + bounds.height, cursor: 'nesw-resize' },
-            { id: 'br', x: bounds.minX + bounds.width, y: bounds.minY + bounds.height, cursor: 'nwse-resize' },
-          ].map((handle) => (
-            <circle
-              key={handle.id}
-              cx={`${toPctX(handle.x)}%`}
-              cy={`${toPctY(handle.y)}%`}
-              r="8"
-              fill="#ffffff"
-              stroke="#00aaff"
-              strokeWidth="3"
-              onPointerDown={(e) => handlePointerDown(e, handle.id)}
-              style={{ cursor: handle.cursor }}
+          {/* Diagonal cross-hairs between opposite points */}
+          {[[tp, bp], [rp, lp]].map(([[ax, ay], [bx, by]], i) => (
+            <line
+              key={i}
+              x1={toPctX(ax)} y1={toPctY(ay)}
+              x2={toPctX(bx)} y2={toPctY(by)}
+              stroke="rgba(255,255,255,0.2)"
+              strokeWidth="1"
+              strokeDasharray="4 6"
+              pointerEvents="none"
             />
           ))}
+
+          {/* Draggable reference points */}
+          {refPoints.map(([px, py], idx) => {
+            const color = pointColors[idx];
+            const label = REF_PIN_LABELS[idx];
+            const isActive = activeIdx === idx;
+            return (
+              <g key={idx}>
+                {/* Outer glow ring when active */}
+                {isActive && (
+                  <circle
+                    cx={toPctX(px)} cy={toPctY(py)} r="18"
+                    fill="none"
+                    stroke={color}
+                    strokeWidth="2"
+                    strokeOpacity="0.4"
+                    pointerEvents="none"
+                  />
+                )}
+                {/* Hit area (invisible, larger) */}
+                <circle
+                  cx={toPctX(px)} cy={toPctY(py)} r="16"
+                  fill="transparent"
+                  onPointerDown={(e) => handlePointerDown(e, idx)}
+                  style={{ cursor: 'crosshair' }}
+                />
+                {/* Visible dot */}
+                <circle
+                  cx={toPctX(px)} cy={toPctY(py)} r="7"
+                  fill={color}
+                  stroke="#fff"
+                  strokeWidth="2"
+                  pointerEvents="none"
+                />
+                {/* Label */}
+                <text
+                  x={toPctX(px)} y={toPctY(py - 14)}
+                  textAnchor="middle"
+                  dominantBaseline="middle"
+                  fill="#fff"
+                  fontSize="10"
+                  fontWeight="700"
+                  fontFamily="Inter, sans-serif"
+                  pointerEvents="none"
+                  style={{ textShadow: `0 1px 3px rgba(0,0,0,0.8)` }}
+                >
+                  {label}
+                </text>
+              </g>
+            );
+          })}
         </g>
       </svg>
-      
+
       {/* Help Banner */}
       <div style={{
         position: 'absolute', top: 10, left: '50%', transform: 'translateX(-50%)',
-        background: 'rgba(0,0,0,0.7)', color: 'white', padding: '6px 12px',
-        borderRadius: 20, fontSize: 13, pointerEvents: 'none', backdropFilter: 'blur(4px)',
-        border: '1px solid rgba(255,255,255,0.1)', fontWeight: 500, whiteSpace: 'nowrap'
+        background: 'rgba(0,0,0,0.75)', color: 'white', padding: '6px 14px',
+        borderRadius: 20, fontSize: 12, pointerEvents: 'none',
+        backdropFilter: 'blur(4px)', border: '1px solid rgba(255,255,255,0.12)',
+        fontWeight: 500, whiteSpace: 'nowrap',
       }}>
-        Adjust blue box to match board edges
+        Drag coloured dots to pin positions — Top · Right · Left · Bottom
       </div>
     </div>
   );

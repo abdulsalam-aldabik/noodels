@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect } from 'react';
 import { loadModel, runInference, onModelStatus, isModelLoaded } from './inference';
 import { ImageCapture } from './components/ImageCapture';
-import { ResultsOverlay, type BoardBounds } from './components/ResultsOverlay';
+import { ResultsOverlay } from './components/ResultsOverlay';
 import { PieceLegend } from './components/PieceLegend';
 import { PerformanceStats } from './components/PerformanceStats';
 import { ModelStatusBar } from './components/ModelStatusBar';
@@ -34,9 +34,8 @@ function App() {
   const [solverResult, setSolverResult] = useState<SolverResult | null>(null);
   const [hintPlacement, setHintPlacement] = useState<Placement | null>(null);
   const [isSolving, setIsSolving] = useState(false);
-  const [customBoardBounds, setCustomBoardBounds] = useState<BoardBounds | null>(null);
-  const [rectifiedCanvas, setRectifiedCanvas] = useState<HTMLCanvasElement | null>(null);
-  const [processingStage, setProcessingStage] = useState<string>('');
+  /** Perspective homography H (9 elements) from image-pixel → board-space */
+  const [calibrationH, setCalibrationH] = useState<number[] | null>(null);
 
   // Load model on mount
   useEffect(() => {
@@ -84,29 +83,20 @@ function App() {
   const handleMapToBoard = useCallback(() => {
     if (!result) return;
 
-    try {
-      // When we have a rectified image, use fixed pin positions (exact coordinates)
-      const rectifiedBounds = rectifiedCanvas
-        ? { minX: 0, minY: 0, width: RECTIFIED_SIZE, height: RECTIFIED_SIZE }
-        : undefined;
+    // Use homography if calibration points were set, else auto-estimate from bboxes
+    const { mappings: newMappings, boardState: newBoard } = mapDetectionsToBoard(
+      result.detections,
+      calibrationH ? { H: calibrationH } : undefined,
+    );
+    
+    setBoardState(newBoard);
+    setMappings(newMappings);
+    setSolverResult(null);
+    setHintPlacement(null);
+    setPhase('board');
 
-      const { mappings: newMappings, boardState: newBoard } = mapDetectionsToBoard(
-        result.detections, 
-        rectifiedBounds || customBoardBounds || undefined
-      );
-      
-      setBoardState(newBoard);
-      setMappings(newMappings);
-      setSolverResult(null);
-      setHintPlacement(null);
-      setPhase('board');
-
-      console.log(`📍 Mapped ${newMappings.length} detections to board pins (rectified: ${!!rectifiedCanvas})`);
-    } catch (err) {
-      console.error('Mapping failed:', err);
-      setError(`Mapping failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }, [result, rectifiedCanvas, customBoardBounds]);
+    console.log(`📍 Mapped ${newMappings.length} detections to board pins`);
+  }, [result, calibrationH]);
 
   const handleSolve = useCallback(() => {
     if (!boardState) return;
@@ -262,10 +252,10 @@ function App() {
 
             <div className="results-grid">
               <div className="card results-image-card">
-                <ResultsOverlay 
-                  image={capturedImage} 
-                  result={result} 
-                  onBoundsChange={setCustomBoardBounds}
+                <ResultsOverlay
+                  image={capturedImage}
+                  result={result}
+                  onCalibrationChange={setCalibrationH}
                 />
               </div>
               <div className="results-sidebar">
@@ -383,7 +373,7 @@ function App() {
                 {/* Detection image preview */}
                 {capturedImage && result && (
                   <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
-                    <ResultsOverlay image={capturedImage} result={result} onBoundsChange={() => {}} />
+                    <ResultsOverlay image={capturedImage} result={result} />
                   </div>
                 )}
               </div>
