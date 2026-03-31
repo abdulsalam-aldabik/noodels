@@ -82,7 +82,7 @@ for split in ['train', 'val']:
 
 # Generate Dataset YAML seamlessly
 with open(os.path.join(OUTPUT_DIR, "dataset.yaml"), "w") as f:
-    f.write("path: .\n")
+    f.write(f"path: {OUTPUT_DIR}\n")
     f.write("train: images/train\n")
     f.write("val: images/val\n\n")
     f.write("names:\n")
