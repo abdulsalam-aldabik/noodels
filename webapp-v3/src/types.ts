@@ -1,3 +1,5 @@
+import type { BoardState } from './board/board';
+
 /** Segment types for noodle pieces */
 export const CURVE = 0;
 export const CROSS_NS = 1;
@@ -48,6 +50,94 @@ export interface PieceMapping {
   pinIndices: number[];
   confidence: number;
   distanceBoardUnits?: number;
+}
+
+export type MappingMode = 'legacy' | 'global';
+
+export interface PlacementCandidate {
+  placement: Placement;
+  pinIndices: number[];
+  score: number;
+  distanceBoardUnits: number;
+  iou: number;
+  precision: number;
+  recall: number;
+  sizeFit: number;
+  spanFit: number;
+  pinCountFit: number;
+  activeCellCount: number;
+  placementCellCount: number;
+  invalidCellRatio: number;
+}
+
+export interface DetectionCandidateSet {
+  detectionIndex: number;
+  detection: Detection;
+  pieceIndex: number;
+  candidates: PlacementCandidate[];
+}
+
+export interface AssignmentConfig {
+  mode: MappingMode;
+  topKCandidates: number;
+  maxCandidateDistance: number;
+  minTemplateIoU: number;
+  minPlacementRecall: number;
+  confidenceWeight: number;
+  iouWeight: number;
+  precisionWeight: number;
+  recallWeight: number;
+  sizeWeight: number;
+  spanWeight: number;
+  pinCountWeight: number;
+  distanceWeight: number;
+  invalidCellPenalty: number;
+  enableOpenSpacePruning: boolean;
+  timeoutMs: number;
+  uncertainScoreThreshold: number;
+  uncertainDistanceThreshold: number;
+  unmatchedPenalty: number;
+  requireManualForUncertain: boolean;
+}
+
+export interface PieceAssignmentSummary {
+  pieceIndex: number;
+  pieceLabel: string;
+  candidateCount: number;
+  topScore: number;
+  topIou: number;
+  topRecall: number;
+  topSpanFit: number;
+  selectedScore: number | null;
+  selectedRecall: number | null;
+  selectedUncertain: boolean;
+}
+
+export interface AssignmentDiagnostics {
+  mode: MappingMode;
+  elapsedMs: number;
+  statesExplored: number;
+  branchesPrunedNoFit: number;
+  branchesPrunedOpenSpace: number;
+  timedOut: boolean;
+  usedFallback: boolean;
+  uncertainCount: number;
+  pieceSummaries: PieceAssignmentSummary[];
+  reason?: string;
+}
+
+export interface UncertainMatch {
+  detectionIndex: number;
+  pieceIndex: number;
+  score: number;
+  distanceBoardUnits: number;
+}
+
+export interface MappingResult {
+  mappings: PieceMapping[];
+  boardState: BoardState;
+  diagnostics: AssignmentDiagnostics;
+  pendingUncertainMappings: PieceMapping[] | null;
 }
 
 /** Solver result */
