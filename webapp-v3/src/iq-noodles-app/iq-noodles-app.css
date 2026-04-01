@@ -71,6 +71,7 @@ body {
   background: rgba(0, 0, 0, 0.28);
   border-radius: 14px;
   padding: 0.4rem;
+  cursor: crosshair;
 }
 
 .board-frame {
@@ -93,6 +94,42 @@ body {
   fill: rgba(255, 191, 63, 0.95);
 }
 
+.preview-cell {
+  opacity: 0.4;
+  stroke: rgba(255, 255, 255, 0.7);
+  stroke-width: 1.5;
+}
+
+.placed-cell {
+  stroke: rgba(0, 0, 0, 0.5);
+  stroke-width: 1;
+}
+
+.controls-row {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.controls-row button,
+.piece-actions button {
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 10px;
+  padding: 0.35rem 0.65rem;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--ink);
+  font: inherit;
+}
+
+.controls-line,
+.feedback-line {
+  margin: 0.5rem 0;
+}
+
+.feedback-line {
+  color: var(--accent-2);
+}
+
 .piece-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
@@ -106,9 +143,20 @@ body {
   background: rgba(255, 255, 255, 0.03);
 }
 
+.piece-card.selected {
+  border-color: rgba(255, 191, 63, 0.7);
+  box-shadow: inset 0 0 0 1px rgba(255, 191, 63, 0.4);
+}
+
 .piece-card h3 {
   margin: 0 0 0.3rem;
   color: var(--accent);
+}
+
+.piece-actions {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
 }
 
 @media (max-width: 640px) {
