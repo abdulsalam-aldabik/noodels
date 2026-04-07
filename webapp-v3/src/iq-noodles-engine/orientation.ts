@@ -1,5 +1,9 @@
 import { SegmentShape } from "./types";
-import type { PieceDefinition, PieceOrientation } from "./types";
+import type {
+  PieceDefinition,
+  PieceOrientation,
+  PieceOrientationWithTransform,
+} from "./types";
 
 const BIG_GRID_WIDTH = 40;
 const BIG_GRID_HEIGHT = 40;
@@ -86,15 +90,29 @@ function buildRotatedPositions(keys: [number, number][], matrix: readonly [numbe
 }
 
 export function findAllOrientations(piece: PieceDefinition): PieceOrientation[] {
-  const unique: PieceOrientation[] = [];
+  return findAllOrientationsWithTransforms(piece).map((entry) => entry.orientation);
+}
+
+export function findAllOrientationsWithTransforms(piece: PieceDefinition): PieceOrientationWithTransform[] {
+  const unique: PieceOrientationWithTransform[] = [];
 
   const baseNormalized = normalizeToMinimalPosition(piece.bigGridPositions);
   const baseSorted = sortWithShapes(baseNormalized, [...piece.shapes]);
-  unique.push(baseSorted);
+  unique.push({
+    orientation: baseSorted,
+    transform: { rotationSteps: 0, mirrored: false },
+  });
 
-  const addIfUnique = (candidate: PieceOrientation): void => {
-    if (!unique.some((existing) => areOrientationsIdentical(existing, candidate))) {
-      unique.push(candidate);
+  const addIfUnique = (
+    candidate: PieceOrientation,
+    rotationSteps: 0 | 1 | 2 | 3,
+    mirrored: boolean,
+  ): void => {
+    if (!unique.some((existing) => areOrientationsIdentical(existing.orientation, candidate))) {
+      unique.push({
+        orientation: candidate,
+        transform: { rotationSteps, mirrored },
+      });
     }
   };
 
@@ -107,7 +125,7 @@ export function findAllOrientations(piece: PieceDefinition): PieceOrientation[] 
     const rotated = buildRotatedPositions(baseKeys, matrix);
     const normalized = recenterAndNormalize(rotated);
     const remappedShapes = remapShapes(baseShapes, ROTATION_SHAPE_MAP[rotationIndex]);
-    addIfUnique(sortWithShapes(normalized, remappedShapes));
+    addIfUnique(sortWithShapes(normalized, remappedShapes), (rotationIndex + 1) as 1 | 2 | 3, false);
   });
 
   const reflected = buildRotatedPositions(baseKeys, REFLECTION_MATRIX);
@@ -115,9 +133,11 @@ export function findAllOrientations(piece: PieceDefinition): PieceOrientation[] 
   const reflectedShapes = remapShapes(baseShapes, REFLECTION_SHAPE_MAP);
   const reflectedSorted = sortWithShapes(reflectedNormalized, reflectedShapes);
 
-  if (!unique.some((existing) => areOrientationsIdentical(existing, reflectedSorted))) {
-    const reflectionStart = unique.length;
-    unique.push(reflectedSorted);
+  if (!unique.some((existing) => areOrientationsIdentical(existing.orientation, reflectedSorted))) {
+    unique.push({
+      orientation: reflectedSorted,
+      transform: { rotationSteps: 0, mirrored: true },
+    });
 
     min = Math.min(...reflectedSorted.positions);
     translated = reflectedSorted.positions.map((position) => position - min);
@@ -130,16 +150,14 @@ export function findAllOrientations(piece: PieceDefinition): PieceOrientation[] 
       const remappedShapes = remapShapes(reflectedBaseShapes, ROTATION_SHAPE_MAP[rotationIndex]);
       const candidate = sortWithShapes(normalized, remappedShapes);
 
-      let existsInReflectionBranch = false;
-      for (let i = reflectionStart; i < unique.length; i += 1) {
-        if (areOrientationsIdentical(unique[i], candidate)) {
-          existsInReflectionBranch = true;
-          break;
-        }
-      }
-
-      if (!existsInReflectionBranch) {
-        unique.push(candidate);
+      if (!unique.some((existing) => areOrientationsIdentical(existing.orientation, candidate))) {
+        unique.push({
+          orientation: candidate,
+          transform: {
+            rotationSteps: (rotationIndex + 1) as 1 | 2 | 3,
+            mirrored: true,
+          },
+        });
       }
     });
   }

@@ -25,11 +25,11 @@ body {
 }
 
 .noodles-shell {
-  max-width: 1200px;
+  max-width: 1700px;
   margin: 0 auto;
   padding: 2rem 1.25rem 3rem;
   display: grid;
-  gap: 1.5rem;
+  gap: 1rem;
 }
 
 .noodles-header,
@@ -38,40 +38,52 @@ body {
   border: 1px solid var(--panel-border);
   background: var(--panel);
   border-radius: 20px;
-  padding: 1.25rem;
+  padding: 1rem;
   backdrop-filter: blur(7px);
 }
 
-.eyebrow {
-  margin: 0;
-  color: var(--accent-2);
-  letter-spacing: 0.08em;
-  font-weight: 700;
-}
-
 .noodles-header h1 {
-  margin: 0.45rem 0;
-  font-size: clamp(1.8rem, 4vw, 2.8rem);
-}
-
-.noodles-header p,
-.board-panel p,
-.piece-card p {
-  color: var(--ink-soft);
+  margin: 0 0 0.6rem;
+  font-size: clamp(1.4rem, 3.2vw, 2rem);
 }
 
 .board-panel {
   display: grid;
-  gap: 1rem;
+  gap: 0.8rem;
 }
 
-.board-panel svg {
+.merged-board {
+  position: relative;
+  width: min(100%, 640px);
+  aspect-ratio: 1 / 1;
+  overflow: hidden;
+  border-radius: 14px;
+}
+
+.board-visual-layer {
+  display: block;
   width: 100%;
-  max-width: 560px;
+  height: 100%;
+  max-width: 100%;
+  aspect-ratio: 1 / 1;
   background: rgba(0, 0, 0, 0.28);
   border-radius: 14px;
-  padding: 0.4rem;
+}
+
+.board-visual-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.board-interaction-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
   cursor: crosshair;
+  touch-action: none;
+  background: transparent;
 }
 
 .board-frame {
@@ -94,15 +106,15 @@ body {
   fill: rgba(255, 191, 63, 0.95);
 }
 
-.preview-cell {
-  opacity: 0.4;
-  stroke: rgba(255, 255, 255, 0.7);
-  stroke-width: 1.5;
-}
-
 .placed-cell {
   stroke: rgba(0, 0, 0, 0.5);
   stroke-width: 1;
+}
+
+.preview-cell {
+  opacity: 0.34;
+  stroke: rgba(255, 255, 255, 0.62);
+  stroke-width: 1.3;
 }
 
 .controls-row {
@@ -121,13 +133,24 @@ body {
   font: inherit;
 }
 
-.controls-line,
 .feedback-line {
   margin: 0.5rem 0;
 }
 
 .feedback-line {
   color: var(--accent-2);
+}
+
+.debug-panel {
+  margin: 0.6rem 0 0;
+  padding: 0.6rem;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  background: rgba(0, 0, 0, 0.48);
+  color: #f4f8ff;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  white-space: pre-wrap;
 }
 
 .piece-grid {
@@ -138,9 +161,10 @@ body {
 
 .piece-card {
   border-radius: 12px;
-  padding: 0.8rem;
+  padding: 0.55rem;
   border: 1px solid rgba(255, 255, 255, 0.12);
   background: rgba(255, 255, 255, 0.03);
+  cursor: pointer;
 }
 
 .piece-card.selected {
@@ -148,15 +172,63 @@ body {
   box-shadow: inset 0 0 0 1px rgba(255, 191, 63, 0.4);
 }
 
-.piece-card h3 {
-  margin: 0 0 0.3rem;
-  color: var(--accent);
-}
-
 .piece-actions {
   display: flex;
   gap: 0.4rem;
   flex-wrap: wrap;
+  justify-content: center;
+}
+
+.piece-preview-3d {
+  width: 100%;
+  height: 150px;
+  margin: 0 0 0.45rem;
+  border-radius: 12px;
+  overflow: hidden;
+  background: linear-gradient(180deg, rgba(14, 24, 38, 0.9), rgba(8, 14, 25, 0.9));
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.board-scene-3d {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 2;
+  border-radius: 14px;
+  overflow: hidden;
+  border: none;
+  background: transparent;
+  pointer-events: none;
+}
+
+.debug-label {
+  fill: #ffffff;
+  font-size: 7px;
+  font-weight: 700;
+  text-anchor: middle;
+  dominant-baseline: central;
+  pointer-events: none;
+  paint-order: stroke;
+  stroke: #000000;
+  stroke-width: 2px;
+}
+
+.piece-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.25rem 0.4rem;
+}
+
+.piece-key {
+  font-weight: 800;
+  font-size: 1.1rem;
+}
+
+.piece-color-name {
+  color: var(--ink-soft);
+  font-size: 0.75rem;
 }
 
 @media (max-width: 640px) {
@@ -169,5 +241,13 @@ body {
   .inventory-panel {
     border-radius: 14px;
     padding: 0.9rem;
+  }
+
+  .piece-preview-3d {
+    height: 130px;
+  }
+
+  .board-scene-3d {
+    inset: 0;
   }
 }

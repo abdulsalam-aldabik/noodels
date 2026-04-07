@@ -6,44 +6,53 @@ import {
   POSITIONS_AROUND_PINS,
   findAllOrientations,
   generatePlacementsForPiece,
+  solve,
+  getHint,
 } from "../iq-noodles-engine";
 import type { PiecePlacement } from "../iq-noodles-engine";
+import BoardScene3D from "./BoardScene3D";
+import { BoardCoordinator, getPinCenter } from "./boardCoordinator";
+import PiecePreview3D from "./PiecePreview3D";
+import { PIECE_ASSET_BY_ID } from "./pieceAssets";
 
 import "./iq-noodles-app.css";
 
-const CELL_SIZE = 28;
-const BOARD_PADDING = 20;
-const PIECE_COLORS = [
-  "#8e1a08",
-  "#1f6db7",
-  "#8b4ecf",
-  "#46a8e8",
-  "#f2d44f",
-  "#78b446",
-  "#f38c2b",
-  "#f071b5",
-  "#1f9346",
-  "#bfc9de",
-  "#df4040",
-];
-
-function toRowCol(position: number, width: number): [number, number] {
-  return [Math.floor(position / width), position % width];
+interface PointerMapResult {
+  x: number;
+  y: number;
+  rectWidth: number;
+  rectHeight: number;
 }
 
-function getPinCenter(pinPositions: readonly number[], width: number): [number, number] {
-  const coords = pinPositions.map((position) => toRowCol(position, width));
-  const avgRow = coords.reduce((sum, [row]) => sum + row, 0) / coords.length;
-  const avgCol = coords.reduce((sum, [, col]) => sum + col, 0) / coords.length;
-  return [avgRow, avgCol];
+function getPlacementFootprintSize(positions: number[], boardWidth: number): number {
+  let minRow = Number.POSITIVE_INFINITY;
+  let maxRow = Number.NEGATIVE_INFINITY;
+  let minCol = Number.POSITIVE_INFINITY;
+  let maxCol = Number.NEGATIVE_INFINITY;
+
+  positions.forEach((position) => {
+    const row = Math.floor(position / boardWidth);
+    const col = position % boardWidth;
+    minRow = Math.min(minRow, row);
+    maxRow = Math.max(maxRow, row);
+    minCol = Math.min(minCol, col);
+    maxCol = Math.max(maxCol, col);
+  });
+
+  const rowSpan = maxRow - minRow + 1;
+  const colSpan = maxCol - minCol + 1;
+  return Math.max(rowSpan, colSpan);
 }
+
 
 export default function IQNoodlesApp() {
   const board = useMemo(() => new NoodlesBoard(), []);
+  const coordinator = useMemo(() => new BoardCoordinator(board.width, board.height), [board.height, board.width]);
   const [selectedPieceId, setSelectedPieceId] = useState(0);
   const [placedByPiece, setPlacedByPiece] = useState<Record<number, PiecePlacement>>({});
   const [hoverPoint, setHoverPoint] = useState<{ x: number; y: number } | null>(null);
-  const [feedback, setFeedback] = useState("Select a piece, rotate if needed, then click board to snap.");
+  const [showDebug, setShowDebug] = useState(false);
+  const [debugPlacementInfo, setDebugPlacementInfo] = useState("");
 
   const [orientationByPiece, setOrientationByPiece] = useState<Record<number, number>>(() => {
     const initial: Record<number, number> = {};
@@ -52,33 +61,6 @@ export default function IQNoodlesApp() {
     });
     return initial;
   });
-
-  const boardCells = useMemo(() => {
-    const cells: Array<{ position: number; x: number; y: number }> = [];
-    for (let position = 0; position < board.width * board.height; position += 1) {
-      if (!board.isFree(position)) {
-        continue;
-      }
-      const [row, col] = toRowCol(position, board.width);
-      cells.push({
-        position,
-        x: BOARD_PADDING + col * CELL_SIZE,
-        y: BOARD_PADDING + row * CELL_SIZE,
-      });
-    }
-    return cells;
-  }, [board]);
-
-  const pinCenters = useMemo(() => {
-    return POSITIONS_AROUND_PINS.map((positions, pinIndex) => {
-      const [row, col] = getPinCenter(positions, board.width);
-      return {
-        pinIndex,
-        x: BOARD_PADDING + col * CELL_SIZE,
-        y: BOARD_PADDING + row * CELL_SIZE,
-      };
-    });
-  }, [board]);
 
   const orientationCounts = useMemo(() => {
     const counts: Record<number, number> = {};
@@ -96,18 +78,101 @@ export default function IQNoodlesApp() {
     return placements;
   }, [board]);
 
+  const orientationMetaByPiece = useMemo(() => {
+    const meta: Record<number, Record<number, { mirrored: boolean; rotationSteps: 0 | 1 | 2 | 3 }>> = {};
+    IQ_NOODLES_PIECES.forEach((piece) => {
+      const byOrientation: Record<number, { mirrored: boolean; rotationSteps: 0 | 1 | 2 | 3 }> = {};
+      placementsByPiece[piece.id].forEach((placement) => {
+        if (byOrientation[placement.orientationIndex] === undefined) {
+          byOrientation[placement.orientationIndex] = {
+            mirrored: placement.mirrored ?? false,
+            rotationSteps: placement.rotationSteps ?? 0,
+          };
+        }
+      });
+      meta[piece.id] = byOrientation;
+    });
+    return meta;
+  }, [placementsByPiece]);
+
+  const orientationIndicesByPiece = useMemo(() => {
+    const indices: Record<number, number[]> = {};
+    IQ_NOODLES_PIECES.forEach((piece) => {
+      indices[piece.id] = Object.keys(orientationMetaByPiece[piece.id])
+        .map(Number)
+        .sort((a, b) => a - b);
+    });
+    return indices;
+  }, [orientationMetaByPiece]);
+
+  const getNextOrientationIndex = (pieceId: number, currentOrientation: number): number => {
+    const available = orientationIndicesByPiece[pieceId] ?? [];
+    if (available.length === 0) {
+      return currentOrientation;
+    }
+
+    const currentMeta = orientationMetaByPiece[pieceId]?.[currentOrientation];
+    if (!currentMeta) {
+      return available[0];
+    }
+
+    const sameMirror = available.filter(
+      (index) => (orientationMetaByPiece[pieceId]?.[index]?.mirrored ?? false) === currentMeta.mirrored,
+    );
+
+    const cyclePool = (sameMirror.length > 0 ? sameMirror : available)
+      .slice()
+      .sort((a, b) => {
+        const ra = orientationMetaByPiece[pieceId]?.[a]?.rotationSteps ?? 0;
+        const rb = orientationMetaByPiece[pieceId]?.[b]?.rotationSteps ?? 0;
+        return ra - rb || a - b;
+      });
+
+    const currentIndex = cyclePool.indexOf(currentOrientation);
+    if (currentIndex < 0) {
+      return cyclePool[0];
+    }
+    return cyclePool[(currentIndex + 1) % cyclePool.length];
+  };
+
   const pieceStats = useMemo(() => {
     return IQ_NOODLES_PIECES.map((piece) => ({
       id: piece.id,
-      segments: piece.bigGridPositions.length,
-      orientations: orientationCounts[piece.id],
-      placements: placementsByPiece[piece.id].length,
+      orientations: orientationIndicesByPiece[piece.id]?.length ?? orientationCounts[piece.id],
       isPlaced: Boolean(placedByPiece[piece.id]),
-      selectedOrientation: orientationByPiece[piece.id],
     }));
-  }, [orientationByPiece, orientationCounts, placedByPiece, placementsByPiece]);
+  }, [orientationCounts, orientationIndicesByPiece, placedByPiece]);
 
-  const boardSize = BOARD_PADDING * 2 + (board.width - 1) * CELL_SIZE;
+  const boardCells = useMemo(() => {
+    const cells: Array<{ position: number; x: number; y: number }> = [];
+    for (let position = 0; position < board.width * board.height; position += 1) {
+      if (!board.isFree(position)) {
+        continue;
+      }
+      const [row, col] = coordinator.toRowCol(position);
+      const point = coordinator.rowColToBoardPoint(row, col);
+      cells.push({
+        position,
+        x: point.x,
+        y: point.y,
+      });
+    }
+    return cells;
+  }, [board, coordinator]);
+
+  const pinCenters = useMemo(() => {
+    return POSITIONS_AROUND_PINS.map((positions, pinIndex) => {
+      const [row, col] = getPinCenter(positions, coordinator);
+      const point = coordinator.rowColToBoardPoint(row, col);
+      return {
+        pinIndex,
+        x: point.x,
+        y: point.y,
+      };
+    });
+  }, [coordinator]);
+
+  const boardSize = coordinator.boardSize;
 
   const occupiedByOthers = useMemo(() => {
     const occupied = new Set<number>();
@@ -121,40 +186,68 @@ export default function IQNoodlesApp() {
     return occupied;
   }, [placedByPiece, selectedPieceId]);
 
+  const getFreePlacements = (pieceId: number): PiecePlacement[] => {
+    return placementsByPiece[pieceId].filter((placement) =>
+      placement.positions.every((position) => !occupiedByOthers.has(position)),
+    );
+  };
+
+  const countFreePlacementsByOrientation = (pieceId: number): Record<number, number> => {
+    return getFreePlacements(pieceId).reduce<Record<number, number>>((acc, placement) => {
+      acc[placement.orientationIndex] = (acc[placement.orientationIndex] ?? 0) + 1;
+      return acc;
+    }, {});
+  };
+
+  const applyPlacement = (pieceId: number, placement: PiecePlacement, selectedOrientation: number): void => {
+    if (placement.orientationIndex !== selectedOrientation) {
+      setOrientationByPiece((previous) => ({
+        ...previous,
+        [pieceId]: placement.orientationIndex,
+      }));
+    }
+
+    setPlacedByPiece((previous) => ({
+      ...previous,
+      [pieceId]: placement,
+    }));
+  };
+
   const findBestPlacement = (
     pieceId: number,
     orientationIndex: number,
-    targetX: number,
-    targetY: number,
+    targetRow: number,
+    targetCol: number,
+    allowOrientationFallback = false,
   ): PiecePlacement | null => {
-    const candidates = placementsByPiece[pieceId].filter((placement) => {
-      if (placement.orientationIndex !== orientationIndex) {
-        return false;
-      }
-      return placement.positions.every((position) => !occupiedByOthers.has(position));
-    });
+    const freeCandidates = getFreePlacements(pieceId);
 
-    if (candidates.length === 0) {
+    const candidates = freeCandidates.filter((placement) => placement.orientationIndex === orientationIndex);
+
+    const scoringPool =
+      candidates.length > 0 || !allowOrientationFallback ? candidates : freeCandidates;
+
+    if (scoringPool.length === 0) {
       return null;
     }
 
     let bestPlacement: PiecePlacement | null = null;
     let bestScore = Number.POSITIVE_INFINITY;
 
-    candidates.forEach((placement) => {
+    scoringPool.forEach((placement) => {
       const center = placement.positions.reduce(
         (acc, position) => {
-          const [row, col] = toRowCol(position, board.width);
-          acc.x += BOARD_PADDING + col * CELL_SIZE;
-          acc.y += BOARD_PADDING + row * CELL_SIZE;
+          const [row, col] = coordinator.toRowCol(position);
+          acc.row += row;
+          acc.col += col;
           return acc;
         },
-        { x: 0, y: 0 },
+        { row: 0, col: 0 },
       );
 
-      center.x /= placement.positions.length;
-      center.y /= placement.positions.length;
-      const score = (center.x - targetX) ** 2 + (center.y - targetY) ** 2;
+      center.row /= placement.positions.length;
+      center.col /= placement.positions.length;
+      const score = (center.row - targetRow) ** 2 + (center.col - targetCol) ** 2;
 
       if (score < bestScore) {
         bestScore = score;
@@ -165,51 +258,197 @@ export default function IQNoodlesApp() {
     return bestPlacement;
   };
 
-  const previewPlacement = useMemo(() => {
-    if (!hoverPoint) {
-      return null;
-    }
-    return findBestPlacement(selectedPieceId, orientationByPiece[selectedPieceId], hoverPoint.x, hoverPoint.y);
-  }, [hoverPoint, orientationByPiece, selectedPieceId, placementsByPiece, occupiedByOthers]);
+  const previewCell = hoverPoint ? coordinator.boardPointToRowCol(hoverPoint) : null;
+  const previewPlacement = previewCell
+    ? findBestPlacement(
+      selectedPieceId,
+      orientationByPiece[selectedPieceId],
+      previewCell.row,
+      previewCell.col,
+    )
+    : null;
 
-  const getLocalPoint = (event: React.PointerEvent<SVGSVGElement>): { x: number; y: number } => {
+  const mapPointerToBoard = (event: React.PointerEvent<HTMLDivElement>): PointerMapResult => {
     const rect = event.currentTarget.getBoundingClientRect();
     return {
-      x: ((event.clientX - rect.left) / rect.width) * boardSize,
-      y: ((event.clientY - rect.top) / rect.height) * boardSize,
+      ...coordinator.domToBoardPoint(
+        event.clientX,
+        event.clientY,
+        rect.left,
+        rect.top,
+        rect.width,
+        rect.height,
+      ),
+      rectWidth: rect.width,
+      rectHeight: rect.height,
     };
   };
 
+  const getLocalPoint = (event: React.PointerEvent<HTMLDivElement>): { x: number; y: number } => {
+    const mapped = mapPointerToBoard(event);
+    return { x: mapped.x, y: mapped.y };
+  };
+
+  const getFlippedOrientationIndex = (pieceId: number, currentOrientation: number): number => {
+    const available = orientationIndicesByPiece[pieceId] ?? [];
+    const currentMeta = orientationMetaByPiece[pieceId]?.[currentOrientation];
+    if (!currentMeta) return currentOrientation;
+
+    const targetMirrored = !currentMeta.mirrored;
+    const opposite = available.filter(
+      (index) => (orientationMetaByPiece[pieceId]?.[index]?.mirrored ?? false) === targetMirrored,
+    );
+    if (opposite.length === 0) return currentOrientation;
+
+    const matchingRotation = opposite.find(
+      (index) => (orientationMetaByPiece[pieceId]?.[index]?.rotationSteps ?? 0) === currentMeta.rotationSteps,
+    );
+    return matchingRotation ?? opposite[0];
+  };
+
   const rotateSelectedPiece = (): void => {
-    const count = orientationCounts[selectedPieceId] ?? 1;
+    const current = orientationByPiece[selectedPieceId];
+    const next = getNextOrientationIndex(selectedPieceId, current);
+
     setOrientationByPiece((previous) => ({
       ...previous,
-      [selectedPieceId]: (previous[selectedPieceId] + 1) % count,
+      [selectedPieceId]: next,
+    }));
+  };
+
+  const flipSelectedPiece = (): void => {
+    const current = orientationByPiece[selectedPieceId];
+    const next = getFlippedOrientationIndex(selectedPieceId, current);
+    setOrientationByPiece((previous) => ({
+      ...previous,
+      [selectedPieceId]: next,
     }));
   };
 
   const clearBoard = (): void => {
     setPlacedByPiece({});
-    setFeedback("Board cleared.");
+    setSolverStatus("");
   };
 
-  const onBoardPointerMove = (event: React.PointerEvent<SVGSVGElement>): void => {
-    setHoverPoint(getLocalPoint(event));
+  const [solverStatus, setSolverStatus] = useState("");
+
+  const buildInitialPlacements = (): Map<number, PiecePlacement> => {
+    const map = new Map<number, PiecePlacement>();
+    for (const [id, placement] of Object.entries(placedByPiece)) {
+      map.set(Number(id), placement);
+    }
+    return map;
   };
 
-  const onBoardClick = (event: React.PointerEvent<SVGSVGElement>): void => {
-    const point = getLocalPoint(event);
-    const candidate = findBestPlacement(selectedPieceId, orientationByPiece[selectedPieceId], point.x, point.y);
+  const onSolve = (): void => {
+    setSolverStatus("Solving...");
+    setTimeout(() => {
+      const result = solve(buildInitialPlacements());
+      if (result.solved) {
+        const next: Record<number, PiecePlacement> = {};
+        result.solution.forEach((placement, pieceId) => {
+          if (placement) next[pieceId] = placement;
+        });
+        setPlacedByPiece(next);
+        setSolverStatus(`Solved in ${result.timeMs.toFixed(0)}ms (${result.statesExplored} states)`);
+      } else if (result.timedOut) {
+        setSolverStatus("Solver timed out");
+      } else {
+        setSolverStatus("No solution found");
+      }
+    }, 10);
+  };
+
+  const onHint = (): void => {
+    setSolverStatus("Finding hint...");
+    setTimeout(() => {
+      const hint = getHint(buildInitialPlacements());
+      if (hint) {
+        setPlacedByPiece((prev) => ({ ...prev, [hint.pieceId]: hint.placement }));
+        setSolverStatus(`Hint: piece ${PIECE_ASSET_BY_ID[hint.pieceId].key} (${hint.fullResult.timeMs.toFixed(0)}ms)`);
+      } else {
+        setSolverStatus("No hint available");
+      }
+    }, 10);
+  };
+
+  const placeFirstFit = (): void => {
+    const selectedOrientation = orientationByPiece[selectedPieceId];
+    const freeByOrientation = getFreePlacements(selectedPieceId)
+      .reduce<Record<number, PiecePlacement[]>>((acc, placement) => {
+        if (!acc[placement.orientationIndex]) {
+          acc[placement.orientationIndex] = [];
+        }
+        acc[placement.orientationIndex].push(placement);
+        return acc;
+      }, {});
+
+    const fallbackPool = Object.values(freeByOrientation).flat();
+    const candidate = freeByOrientation[selectedOrientation]?.[0] ?? fallbackPool[0] ?? null;
+
+    if (showDebug) {
+      const counts = Object.entries(freeByOrientation)
+        .map(([idx, list]) => `${idx}:${list.length}`)
+        .join(" ");
+      const resultLabel = candidate
+        ? `ok orientation=${candidate.orientationIndex}`
+        : "none";
+      setDebugPlacementInfo(
+        [
+          `manualPlace piece=${PIECE_ASSET_BY_ID[selectedPieceId].key}(${selectedPieceId}) selectedOrientation=${selectedOrientation}`,
+          `freeCandidatesByOrientation=${counts || "none"}`,
+          `result=${resultLabel}`,
+        ].join("\n"),
+      );
+    }
+
     if (!candidate) {
-      setFeedback(`Piece ${selectedPieceId} has no legal snap at this orientation.`);
       return;
     }
 
-    setPlacedByPiece((previous) => ({
-      ...previous,
-      [selectedPieceId]: candidate,
-    }));
-    setFeedback(`Piece ${selectedPieceId} snapped at orientation ${orientationByPiece[selectedPieceId]}.`);
+    applyPlacement(selectedPieceId, candidate, selectedOrientation);
+  };
+
+  const onBoardClick = (event: React.PointerEvent<HTMLDivElement>): void => {
+    const mapped = mapPointerToBoard(event);
+    const mappedCell = coordinator.boardPointToRowCol({ x: mapped.x, y: mapped.y });
+    const targetRow = mappedCell.row;
+    const targetCol = mappedCell.col;
+    const selectedOrientation = orientationByPiece[selectedPieceId];
+
+    const freeByOrientation = countFreePlacementsByOrientation(selectedPieceId);
+
+    const candidate = findBestPlacement(
+      selectedPieceId,
+      selectedOrientation,
+      targetRow,
+      targetCol,
+      true,
+    );
+
+    if (showDebug) {
+      const counts = Object.keys(freeByOrientation)
+        .map((key) => `${key}:${freeByOrientation[Number(key)]}`)
+        .join(" ");
+      const resultLabel = candidate
+        ? `ok orientation=${candidate.orientationIndex}`
+        : "none";
+      setDebugPlacementInfo(
+        [
+          `piece=${PIECE_ASSET_BY_ID[selectedPieceId].key}(${selectedPieceId}) selectedOrientation=${selectedOrientation}`,
+          `svgRect=${mapped.rectWidth.toFixed(1)}x${mapped.rectHeight.toFixed(1)} boardSize=${boardSize}`,
+          `local=(${mapped.x.toFixed(1)}, ${mapped.y.toFixed(1)}) target=(${targetRow.toFixed(2)}, ${targetCol.toFixed(2)})`,
+          `freeCandidatesByOrientation=${counts || "none"}`,
+          `result=${resultLabel}`,
+        ].join("\n"),
+      );
+    }
+
+    if (!candidate) {
+      return;
+    }
+
+    applyPlacement(selectedPieceId, candidate, selectedOrientation);
   };
 
   const removePiece = (pieceId: number): void => {
@@ -219,131 +458,231 @@ export default function IQNoodlesApp() {
       return next;
     });
     setSelectedPieceId(pieceId);
-    setFeedback(`Piece ${pieceId} returned to inventory.`);
   };
 
   const placedCells = useMemo(() => {
     return Object.entries(placedByPiece).flatMap(([id, placement]) => {
       const pieceId = Number(id);
       return placement.positions.map((position) => {
-        const [row, col] = toRowCol(position, board.width);
+        const [row, col] = coordinator.toRowCol(position);
+        const point = coordinator.rowColToBoardPoint(row, col);
         return {
           pieceId,
           position,
-          x: BOARD_PADDING + col * CELL_SIZE,
-          y: BOARD_PADDING + row * CELL_SIZE,
+          x: point.x,
+          y: point.y,
         };
       });
     });
-  }, [board.width, placedByPiece]);
+  }, [coordinator, placedByPiece]);
+
+  const placedModels = useMemo(() => {
+    return Object.entries(placedByPiece).map(([id, placement]) => {
+      const pieceId = Number(id);
+      const center = placement.positions.reduce(
+        (acc, position) => {
+          const [row, col] = coordinator.toRowCol(position);
+          acc.row += row;
+          acc.col += col;
+          return acc;
+        },
+        { row: 0, col: 0 },
+      );
+
+      const count = placement.positions.length || 1;
+      const asset = PIECE_ASSET_BY_ID[pieceId];
+
+      return {
+        pieceId,
+        colorHex: asset.colorHex,
+        modelUrl: asset.objUrl,
+        centerRow: center.row / count,
+        centerCol: center.col / count,
+        rotationSteps: placement.rotationSteps ?? 0,
+        mirrored: placement.mirrored ?? false,
+        modelSize: getPlacementFootprintSize(placement.positions, board.width),
+      };
+    });
+  }, [coordinator, placedByPiece]);
 
   return (
     <div className="noodles-shell">
       <header className="noodles-header">
-        <p className="eyebrow">SMART NV / IQ NOODLES</p>
-        <h1>Fresh Java-Parity Build</h1>
-        <p>
-          This is a new implementation baseline: board geometry, pin map, orientation logic, and legal placement
-          generation are driven by the Java reference.
-        </p>
+        <h1>IQ Noodles</h1>
+        <div className="controls-row">
+          <button type="button" onClick={rotateSelectedPiece}>Rotate</button>
+          <button type="button" onClick={flipSelectedPiece}>Flip</button>
+          <button type="button" onClick={clearBoard}>Clear</button>
+          <button type="button" onClick={placeFirstFit}>Place First Fit</button>
+          <button type="button" onClick={onSolve}>Solve</button>
+          <button type="button" onClick={onHint}>Hint</button>
+          <button type="button" onClick={() => setShowDebug((v) => !v)}>{showDebug ? "Hide Debug Panel" : "Show Debug Panel"}</button>
+          {solverStatus && <span className="feedback-line">{solverStatus}</span>}
+        </div>
+        {showDebug && (() => {
+          const selectedOrientation = orientationByPiece[selectedPieceId];
+          const selectedMeta = orientationMetaByPiece[selectedPieceId]?.[selectedOrientation];
+          const available = orientationIndicesByPiece[selectedPieceId] ?? [];
+          const sameMirror = available
+            .filter((index) => (orientationMetaByPiece[selectedPieceId]?.[index]?.mirrored ?? false) === (selectedMeta?.mirrored ?? false))
+            .sort((a, b) => {
+              const ra = orientationMetaByPiece[selectedPieceId]?.[a]?.rotationSteps ?? 0;
+              const rb = orientationMetaByPiece[selectedPieceId]?.[b]?.rotationSteps ?? 0;
+              return ra - rb || a - b;
+            });
+
+          return (
+            <pre className="debug-panel" aria-label="Orientation debug panel">
+              {[
+                `selectedPiece=${PIECE_ASSET_BY_ID[selectedPieceId].key}(${selectedPieceId})`,
+                `selectedOrientation=${selectedOrientation}`,
+                `selectedRotationSteps=${selectedMeta?.rotationSteps ?? "?"}`,
+                `selectedMirrored=${selectedMeta?.mirrored ?? "?"}`,
+                `rotatePool=${sameMirror.map((index) => `${index}[r${orientationMetaByPiece[selectedPieceId]?.[index]?.rotationSteps ?? "?"}]`).join(" ") || "none"}`,
+              ].join("\n")}
+            </pre>
+          );
+        })()}
+        {showDebug && debugPlacementInfo && (
+          <pre className="debug-panel" aria-label="Placement debug panel">{debugPlacementInfo}</pre>
+        )}
       </header>
 
       <section className="board-panel">
-        <div>
-          <h2>Board + Pins + Snap</h2>
-          <p>
-            Valid cells: {board.getValidCellCount()} / {board.width * board.height} | Pins: {POSITIONS_AROUND_PINS.length}
-          </p>
-          <p className="controls-line">
-            Selected piece: {selectedPieceId} | Orientation: {orientationByPiece[selectedPieceId]} / {orientationCounts[selectedPieceId] - 1}
-          </p>
-          <div className="controls-row">
-            <button type="button" onClick={rotateSelectedPiece}>Rotate Selected</button>
-            <button type="button" onClick={clearBoard}>Clear Board</button>
-          </div>
-          <p className="feedback-line">{feedback}</p>
-        </div>
+        <div className="merged-board">
+          <div
+            className="board-interaction-layer"
+            aria-label="IQ Noodles interaction layer"
+            role="region"
+            onPointerMove={(event) => setHoverPoint(getLocalPoint(event))}
+            onPointerLeave={() => setHoverPoint(null)}
+            onPointerDown={onBoardClick}
+          />
 
-        <svg
-          viewBox={`0 0 ${boardSize} ${boardSize}`}
-          role="img"
-          aria-label="IQ Noodles board preview"
-          onPointerMove={onBoardPointerMove}
-          onPointerLeave={() => setHoverPoint(null)}
-          onPointerDown={onBoardClick}
-        >
-          <rect x={0} y={0} width={boardSize} height={boardSize} rx={18} className="board-frame" />
+          <svg
+            className="board-visual-layer"
+            viewBox={`0 0 ${boardSize} ${boardSize}`}
+            preserveAspectRatio="xMidYMid meet"
+            aria-label="IQ Noodles board visuals"
+          >
+            <rect x={0} y={0} width={boardSize} height={boardSize} rx={18} className="board-frame" />
 
-          {boardCells.map((cell) => (
-            <circle
-              key={cell.position}
-              cx={cell.x}
-              cy={cell.y}
-              r={6}
-              className="board-cell"
-            />
-          ))}
-
-          {pinCenters.map((pin) => (
-            <g key={pin.pinIndex}>
-              <circle cx={pin.x} cy={pin.y} r={10} className="pin-ring" />
-              <circle cx={pin.x} cy={pin.y} r={4} className="pin-core" />
-            </g>
-          ))}
-
-          {previewPlacement?.positions.map((position) => {
-            const [row, col] = toRowCol(position, board.width);
-            return (
+            {boardCells.map((cell) => (
               <circle
-                key={`preview-${position}`}
-                cx={BOARD_PADDING + col * CELL_SIZE}
-                cy={BOARD_PADDING + row * CELL_SIZE}
-                r={8.5}
-                className="preview-cell"
-                fill={PIECE_COLORS[selectedPieceId]}
+                key={cell.position}
+                cx={cell.x}
+                cy={cell.y}
+                r={6}
+                className="board-cell"
               />
-            );
-          })}
+            ))}
 
-          {placedCells.map((cell) => (
-            <circle
-              key={`${cell.pieceId}-${cell.position}`}
-              cx={cell.x}
-              cy={cell.y}
-              r={8.5}
-              className="placed-cell"
-              fill={PIECE_COLORS[cell.pieceId]}
-            />
-          ))}
-        </svg>
+            {pinCenters.map((pin) => (
+              <g key={pin.pinIndex}>
+                <circle cx={pin.x} cy={pin.y} r={10} className="pin-ring" />
+                <circle cx={pin.x} cy={pin.y} r={4} className="pin-core" />
+              </g>
+            ))}
+
+            {previewPlacement?.positions.map((position) => {
+              const [row, col] = coordinator.toRowCol(position);
+              const point = coordinator.rowColToBoardPoint(row, col);
+              return (
+                <circle
+                  key={`preview-${position}`}
+                  cx={point.x}
+                  cy={point.y}
+                  r={8.5}
+                  className="preview-cell"
+                  fill={PIECE_ASSET_BY_ID[selectedPieceId].colorHex}
+                />
+              );
+            })}
+
+            {placedCells.map((cell) => (
+              <circle
+                key={`${cell.pieceId}-${cell.position}`}
+                cx={cell.x}
+                cy={cell.y}
+                r={8.5}
+                className="placed-cell"
+                fill={PIECE_ASSET_BY_ID[cell.pieceId].colorHex}
+              />
+            ))}
+
+            {showDebug && placedModels.map((model) => {
+              const asset = PIECE_ASSET_BY_ID[model.pieceId];
+              const centerPoint = coordinator.rowColToBoardPoint(model.centerRow, model.centerCol);
+              const cx = centerPoint.x;
+              const cy = centerPoint.y;
+              return (
+                <text
+                  key={`debug-${model.pieceId}`}
+                  x={cx}
+                  y={cy}
+                  className="debug-label"
+                >
+                  {`${asset.key} o${placedByPiece[model.pieceId]?.orientationIndex ?? "?"} r${model.rotationSteps}${model.mirrored ? " M" : ""}`}
+                </text>
+              );
+            })}
+          </svg>
+
+          <BoardScene3D
+            coordinator={coordinator}
+            placedModels={placedModels}
+          />
+        </div>
       </section>
 
       <section className="inventory-panel">
-        <h2>Piece Inventory (Interactive)</h2>
         <div className="piece-grid">
           {pieceStats.map((piece) => (
-            <article key={piece.id} className={`piece-card ${selectedPieceId === piece.id ? "selected" : ""}`}>
-              <h3>Piece {piece.id}</h3>
-              <p>Segments: {piece.segments}</p>
-              <p>Unique orientations: {piece.orientations}</p>
-              <p>Legal placements: {piece.placements}</p>
-              <p>Current orientation: {piece.selectedOrientation}</p>
-              <p>Status: {piece.isPlaced ? "On board" : "In inventory"}</p>
+            <article
+              key={piece.id}
+              className={`piece-card ${selectedPieceId === piece.id ? "selected" : ""}`}
+            >
+              <div className="piece-label">
+                <span className="piece-key" style={{ color: PIECE_ASSET_BY_ID[piece.id].colorHex }}>{PIECE_ASSET_BY_ID[piece.id].key}</span>
+                <span className="piece-color-name">{PIECE_ASSET_BY_ID[piece.id].colorName}</span>
+              </div>
+              <PiecePreview3D
+                modelUrl={PIECE_ASSET_BY_ID[piece.id].objUrl}
+                colorHex={PIECE_ASSET_BY_ID[piece.id].colorHex}
+              />
               <div className="piece-actions">
-                <button type="button" onClick={() => setSelectedPieceId(piece.id)}>Select</button>
+                <button type="button" aria-label="Select piece" onClick={() => setSelectedPieceId(piece.id)}>Use</button>
                 <button
                   type="button"
-                  onClick={() =>
-                    setOrientationByPiece((previous) => ({
-                      ...previous,
-                      [piece.id]: (previous[piece.id] + 1) % piece.orientations,
-                    }))
-                  }
+                  aria-label="Rotate piece"
+                  onClick={() => {
+                    setOrientationByPiece((previous) => {
+                      const current = previous[piece.id];
+                      const next = getNextOrientationIndex(piece.id, current);
+                      return {
+                        ...previous,
+                        [piece.id]: next,
+                      };
+                    });
+                  }}
                 >
                   Rotate
                 </button>
+                <button
+                  type="button"
+                  aria-label="Flip piece"
+                  onClick={() => {
+                    setOrientationByPiece((previous) => {
+                      const current = previous[piece.id];
+                      const next = getFlippedOrientationIndex(piece.id, current);
+                      return { ...previous, [piece.id]: next };
+                    });
+                  }}
+                >
+                  Flip
+                </button>
                 {piece.isPlaced && (
-                  <button type="button" onClick={() => removePiece(piece.id)}>Pick Up</button>
+                  <button type="button" aria-label="Pick up piece" onClick={() => removePiece(piece.id)}>Pick Up</button>
                 )}
               </div>
             </article>

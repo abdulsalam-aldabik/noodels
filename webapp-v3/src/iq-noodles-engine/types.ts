@@ -17,9 +17,21 @@ export interface PieceOrientation {
   shapes: SegmentShape[];
 }
 
+export interface PieceOrientationTransform {
+  rotationSteps: 0 | 1 | 2 | 3;
+  mirrored: boolean;
+}
+
+export interface PieceOrientationWithTransform {
+  orientation: PieceOrientation;
+  transform: PieceOrientationTransform;
+}
+
 export interface PiecePlacement {
   pieceId: number;
   orientationIndex: number;
   positions: number[];
   shapes: SegmentShape[];
+  rotationSteps?: 0 | 1 | 2 | 3;
+  mirrored?: boolean;
 }

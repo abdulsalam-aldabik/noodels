@@ -1,6 +1,6 @@
 import { NoodlesBoard } from "./board";
 import { IQ_NOODLES_PIECES } from "./constants";
-import { adjustOrientationToBoard, findAllOrientations } from "./orientation";
+import { adjustOrientationToBoard, findAllOrientationsWithTransforms } from "./orientation";
 import type { PiecePlacement } from "./types";
 
 export function generatePlacementsForPiece(pieceId: number, board = new NoodlesBoard()): PiecePlacement[] {
@@ -10,10 +10,10 @@ export function generatePlacementsForPiece(pieceId: number, board = new NoodlesB
   }
 
   const placements: PiecePlacement[] = [];
-  const orientations = findAllOrientations(piece);
+  const orientations = findAllOrientationsWithTransforms(piece);
 
-  orientations.forEach((orientation, orientationIndex) => {
-    const adjusted = adjustOrientationToBoard(orientation, board.width, board.height);
+  orientations.forEach((entry, orientationIndex) => {
+    const adjusted = adjustOrientationToBoard(entry.orientation, board.width, board.height);
     if (!adjusted) {
       return;
     }
@@ -36,6 +36,8 @@ export function generatePlacementsForPiece(pieceId: number, board = new NoodlesB
             orientationIndex,
             positions: translated,
             shapes: [...adjusted.shapes],
+            rotationSteps: entry.transform.rotationSteps,
+            mirrored: entry.transform.mirrored,
           });
         }
       }
