@@ -16,6 +16,7 @@ import { BoardCoordinator, getPinCenter } from "./boardCoordinator";
 import { BOARD_CELL_RADIUS, PIN_CORE_RADIUS, PIN_RING_RADIUS } from "./boardVisualMetrics";
 import PiecePreview3D from "./PiecePreview3D";
 import { PIECE_ASSET_BY_ID } from "./pieceAssets";
+import { getBoardPieceTuning } from "./boardPieceTuning";
 
 import "./iq-noodles-app.css";
 
@@ -54,7 +55,7 @@ export default function IQNoodlesApp() {
   const [hoverPoint, setHoverPoint] = useState<{ x: number; y: number } | null>(null);
   const [showDebug, setShowDebug] = useState(false);
   const [debugPlacementInfo, setDebugPlacementInfo] = useState("");
-  // pieceId → orientationIndex → { x, y, scale }
+  // pieceId → orientationIndex → {x, y, scale}
   const [offsetOverrides, setOffsetOverrides] = useState<Record<number, Record<number, { x: number; y: number; scale: number }>>>({});
 
   const [orientationByPiece, setOrientationByPiece] = useState<Record<number, number>>(() => {
@@ -330,16 +331,20 @@ export default function IQNoodlesApp() {
 
   const nudgeOffset = (pieceId: number, orientationIndex: number, axis: "x" | "y", delta: number): void => {
     setOffsetOverrides((prev) => {
+      const tuning = getBoardPieceTuning(pieceId);
       const byPiece = prev[pieceId] ?? {};
-      const current = byPiece[orientationIndex] ?? { x: 0, y: 0, scale: 1 };
+      const base = tuning.orientationOffsets?.[orientationIndex] ?? { x: 0, y: 0 };
+      const current = byPiece[orientationIndex] ?? { x: base.x, y: base.y, scale: tuning.residualScale ?? 1 };
       return { ...prev, [pieceId]: { ...byPiece, [orientationIndex]: { ...current, [axis]: Math.round((current[axis] + delta) * 100) / 100 } } };
     });
   };
 
   const nudgeScale = (pieceId: number, orientationIndex: number, delta: number): void => {
     setOffsetOverrides((prev) => {
+      const tuning = getBoardPieceTuning(pieceId);
       const byPiece = prev[pieceId] ?? {};
-      const current = byPiece[orientationIndex] ?? { x: 0, y: 0, scale: 1 };
+      const base = tuning.orientationOffsets?.[orientationIndex] ?? { x: 0, y: 0 };
+      const current = byPiece[orientationIndex] ?? { x: base.x, y: base.y, scale: tuning.residualScale ?? 1 };
       return { ...prev, [pieceId]: { ...byPiece, [orientationIndex]: { ...current, scale: Math.round((current.scale + delta) * 1000) / 1000 } } };
     });
   };
@@ -566,15 +571,15 @@ export default function IQNoodlesApp() {
       }
 
       const asset = PIECE_ASSET_BY_ID[pieceId];
-      const orientationIndex = placement.orientationIndex;
-      const override = offsetOverrides[pieceId]?.[orientationIndex];
+      const oi = placement.orientationIndex;
+      const override = offsetOverrides[pieceId]?.[oi];
       return {
         pieceId,
         colorHex: asset.colorHex,
         modelUrl: asset.objUrl,
         centerRow,
         centerCol,
-        orientationIndex,
+        orientationIndex: oi,
         rotationSteps: placement.rotationSteps ?? 0,
         mirrored: placement.mirrored ?? false,
         residualOffsetX: override?.x,
@@ -627,20 +632,22 @@ export default function IQNoodlesApp() {
           <pre className="debug-panel" aria-label="Placement debug panel">{debugPlacementInfo}</pre>
         )}
         {showDebug && placedByPiece[selectedPieceId] && (() => {
-          const placedOrientation = placedByPiece[selectedPieceId]!.orientationIndex;
-          const override = offsetOverrides[selectedPieceId]?.[placedOrientation] ?? { x: 0, y: 0, scale: 1 };
+          const placedOi = placedByPiece[selectedPieceId]!.orientationIndex;
+          const tuning = getBoardPieceTuning(selectedPieceId);
+          const base = tuning.orientationOffsets?.[placedOi] ?? { x: 0, y: 0 };
+          const override = offsetOverrides[selectedPieceId]?.[placedOi] ?? { x: base.x, y: base.y, scale: tuning.residualScale ?? 1 };
           const key = PIECE_ASSET_BY_ID[selectedPieceId].key;
           return (
             <div className="debug-panel" aria-label="Piece offset tuning">
-              <strong>Piece {key} orientation={placedOrientation} — copy to boardPieceTuning.ts</strong>
-              <pre>{`  ${selectedPieceId}: { ..., orientationOffsets: { ${placedOrientation}: { x: ${override.x}, y: ${override.y} } } }`}</pre>
+              <strong>Piece {key} orientation={placedOi} — copy to boardPieceTuning.ts</strong>
+              <pre>{`  ${selectedPieceId}: { ..., orientationOffsets: { ${placedOi}: { x: ${override.x}, y: ${override.y} } } }`}</pre>
               <div className="controls-row">
-                <button type="button" onClick={() => nudgeScale(selectedPieceId, placedOrientation, -0.01)}>S−</button>
-                <button type="button" onClick={() => nudgeScale(selectedPieceId, placedOrientation, +0.01)}>S+</button>
-                <button type="button" onClick={() => nudgeOffset(selectedPieceId, placedOrientation, "x", -0.1)}>X−</button>
-                <button type="button" onClick={() => nudgeOffset(selectedPieceId, placedOrientation, "x", +0.1)}>X+</button>
-                <button type="button" onClick={() => nudgeOffset(selectedPieceId, placedOrientation, "y", -0.1)}>Y−</button>
-                <button type="button" onClick={() => nudgeOffset(selectedPieceId, placedOrientation, "y", +0.1)}>Y+</button>
+                <button type="button" onClick={() => nudgeScale(selectedPieceId, placedOi, -0.01)}>S−</button>
+                <button type="button" onClick={() => nudgeScale(selectedPieceId, placedOi, +0.01)}>S+</button>
+                <button type="button" onClick={() => nudgeOffset(selectedPieceId, placedOi, "x", -0.1)}>X−</button>
+                <button type="button" onClick={() => nudgeOffset(selectedPieceId, placedOi, "x", +0.1)}>X+</button>
+                <button type="button" onClick={() => nudgeOffset(selectedPieceId, placedOi, "y", -0.1)}>Y−</button>
+                <button type="button" onClick={() => nudgeOffset(selectedPieceId, placedOi, "y", +0.1)}>Y+</button>
                 <button type="button" onClick={() => setOffsetOverrides((p) => { const n = {...p}; delete n[selectedPieceId]; return n; })}>Reset</button>
               </div>
             </div>

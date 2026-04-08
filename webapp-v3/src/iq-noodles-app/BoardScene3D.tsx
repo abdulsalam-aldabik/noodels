@@ -68,14 +68,14 @@ export default function BoardScene3D({
 
             // World position
             const world = coordinator.rowColToWorldPoint(model.centerRow, model.centerCol);
-            // Offsets are world-space corrections, looked up by orientationIndex so each
-            // orientation has its own calibrated value — no rotation math needed.
+            // Each orientationIndex has its own world-space correction — no rotation math.
+            // Override (from debug panel) takes priority; both paths use the same logic.
             const GLOBAL_OFFSET_X = -0.5;
-            const orientationOffset = tuning.orientationOffsets?.[model.orientationIndex]
-              ?? { x: model.residualOffsetX ?? tuning.residualOffsetX ?? 0,
-                   y: model.residualOffsetY ?? tuning.residualOffsetY ?? 0 };
-            const worldOffsetX = (GLOBAL_OFFSET_X + orientationOffset.x) * coordinator.cellSize;
-            const worldOffsetY = orientationOffset.y * coordinator.cellSize;
+            const perOrientation = model.residualOffsetX !== undefined || model.residualOffsetY !== undefined
+              ? { x: model.residualOffsetX ?? 0, y: model.residualOffsetY ?? 0 }
+              : (tuning.orientationOffsets?.[model.orientationIndex] ?? { x: 0, y: 0 });
+            const worldOffsetX = (GLOBAL_OFFSET_X + perOrientation.x) * coordinator.cellSize;
+            const worldOffsetY = perOrientation.y * coordinator.cellSize;
             const scale = model.residualScale ?? tuning.residualScale ?? 1;
 
             return (

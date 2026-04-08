@@ -12,7 +12,7 @@ import BoardScene3D from "./BoardScene3D";
 import type { PlacedModel } from "./BoardScene3D";
 import { BoardCoordinator, getPinCenter } from "./boardCoordinator";
 import { BOARD_CELL_RADIUS, PIN_CORE_RADIUS, PIN_RING_RADIUS } from "./boardVisualMetrics";
-import { getBoardPieceTuning, BOARD_PIECE_TUNING_BY_ID } from "./boardPieceTuning";
+import { getBoardPieceTuning } from "./boardPieceTuning";
 import { PIECE_ASSET_BY_ID } from "./pieceAssets";
 import { CONNECTOR_ANCHORS } from "./connectorAnchors";
 
@@ -233,10 +233,19 @@ export default function PieceCalibrationDevPage() {
     return placedModels.filter((model) => model.pieceId === selectedPieceId);
   }, [placedModels, selectedPieceId]);
 
-  // Apply calibration overrides to the tuning for the visible model
+  // Apply calibration overrides directly to the placed model fields
   const calibratedModels = useMemo<PlacedModel[]>(() => {
-    return visibleModels;
-  }, [visibleModels]);
+    return visibleModels.map((model) => {
+      const cal = calibrationByPiece[model.pieceId];
+      if (!cal) return model;
+      return {
+        ...model,
+        residualScale: cal.residualScale,
+        residualOffsetX: cal.residualOffsetX,
+        residualOffsetY: cal.residualOffsetY,
+      };
+    });
+  }, [visibleModels, calibrationByPiece]);
 
   // Compute error metrics for each piece
   const errorMetrics = useMemo(() => {
@@ -303,32 +312,6 @@ export default function PieceCalibrationDevPage() {
   const copyExport = async () => {
     await navigator.clipboard.writeText(exportJson);
   };
-
-  // Apply calibration to tuning (temporarily mutate for rendering)
-  // We need to pass the residual values through the tuning system.
-  // The BoardScene3D reads tuning directly, so we temporarily override.
-  useMemo(() => {
-    for (const [pieceIdStr, cal] of Object.entries(calibrationByPiece)) {
-      const pieceId = Number(pieceIdStr);
-      const tuning = BOARD_PIECE_TUNING_BY_ID[pieceId];
-      if (tuning) {
-        tuning.residualScale = cal.residualScale;
-        tuning.residualOffsetX = cal.residualOffsetX;
-        tuning.residualOffsetY = cal.residualOffsetY;
-      }
-    }
-    // Reset non-calibrated pieces
-    for (const piece of IQ_NOODLES_PIECES) {
-      if (!calibrationByPiece[piece.id]) {
-        const tuning = BOARD_PIECE_TUNING_BY_ID[piece.id];
-        if (tuning) {
-          tuning.residualScale = undefined;
-          tuning.residualOffsetX = undefined;
-          tuning.residualOffsetY = undefined;
-        }
-      }
-    }
-  }, [calibrationByPiece]);
 
   const selectedError = errorMetrics[selectedPieceId];
 
