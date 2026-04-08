@@ -8,10 +8,12 @@ import {
   generatePlacementsForPiece,
   solve,
   getHint,
+  validate,
 } from "../iq-noodles-engine";
 import type { PiecePlacement } from "../iq-noodles-engine";
 import BoardScene3D from "./BoardScene3D";
 import { BoardCoordinator, getPinCenter } from "./boardCoordinator";
+import { BOARD_CELL_RADIUS, PIN_CORE_RADIUS, PIN_RING_RADIUS } from "./boardVisualMetrics";
 import PiecePreview3D from "./PiecePreview3D";
 import { PIECE_ASSET_BY_ID } from "./pieceAssets";
 
@@ -24,35 +26,36 @@ interface PointerMapResult {
   rectHeight: number;
 }
 
-function getPlacementFootprintSize(positions: number[], boardWidth: number): number {
-  let minRow = Number.POSITIVE_INFINITY;
-  let maxRow = Number.NEGATIVE_INFINITY;
-  let minCol = Number.POSITIVE_INFINITY;
-  let maxCol = Number.NEGATIVE_INFINITY;
-
-  positions.forEach((position) => {
-    const row = Math.floor(position / boardWidth);
-    const col = position % boardWidth;
-    minRow = Math.min(minRow, row);
-    maxRow = Math.max(maxRow, row);
-    minCol = Math.min(minCol, col);
-    maxCol = Math.max(maxCol, col);
-  });
-
-  const rowSpan = maxRow - minRow + 1;
-  const colSpan = maxCol - minCol + 1;
-  return Math.max(rowSpan, colSpan);
-}
+// getPlacementFootprint removed — global scale approach doesn't need per-axis spans
 
 
 export default function IQNoodlesApp() {
   const board = useMemo(() => new NoodlesBoard(), []);
   const coordinator = useMemo(() => new BoardCoordinator(board.width, board.height), [board.height, board.width]);
+
+  // Static lookups derived from the fixed pin layout.
+  const positionToPinIndex = useMemo(() => {
+    const map = new Map<number, number>();
+    POSITIONS_AROUND_PINS.forEach((positions, pinIndex) => {
+      positions.forEach((pos) => map.set(pos, pinIndex));
+    });
+    return map;
+  }, []);
+
+  const pinCentersByIndex = useMemo((): Array<[number, number]> => {
+    return POSITIONS_AROUND_PINS.map((positions) => {
+      const avgRow = positions.reduce((s, p) => s + Math.floor(p / board.width), 0) / positions.length;
+      const avgCol = positions.reduce((s, p) => s + (p % board.width), 0) / positions.length;
+      return [avgRow, avgCol];
+    });
+  }, [board.width]);
   const [selectedPieceId, setSelectedPieceId] = useState(0);
   const [placedByPiece, setPlacedByPiece] = useState<Record<number, PiecePlacement>>({});
   const [hoverPoint, setHoverPoint] = useState<{ x: number; y: number } | null>(null);
   const [showDebug, setShowDebug] = useState(false);
   const [debugPlacementInfo, setDebugPlacementInfo] = useState("");
+  // pieceId → orientationIndex → { x, y, scale }
+  const [offsetOverrides, setOffsetOverrides] = useState<Record<number, Record<number, { x: number; y: number; scale: number }>>>({});
 
   const [orientationByPiece, setOrientationByPiece] = useState<Record<number, number>>(() => {
     const initial: Record<number, number> = {};
@@ -325,6 +328,22 @@ export default function IQNoodlesApp() {
     }));
   };
 
+  const nudgeOffset = (pieceId: number, orientationIndex: number, axis: "x" | "y", delta: number): void => {
+    setOffsetOverrides((prev) => {
+      const byPiece = prev[pieceId] ?? {};
+      const current = byPiece[orientationIndex] ?? { x: 0, y: 0, scale: 1 };
+      return { ...prev, [pieceId]: { ...byPiece, [orientationIndex]: { ...current, [axis]: Math.round((current[axis] + delta) * 100) / 100 } } };
+    });
+  };
+
+  const nudgeScale = (pieceId: number, orientationIndex: number, delta: number): void => {
+    setOffsetOverrides((prev) => {
+      const byPiece = prev[pieceId] ?? {};
+      const current = byPiece[orientationIndex] ?? { x: 0, y: 0, scale: 1 };
+      return { ...prev, [pieceId]: { ...byPiece, [orientationIndex]: { ...current, scale: Math.round((current.scale + delta) * 1000) / 1000 } } };
+    });
+  };
+
   const clearBoard = (): void => {
     setPlacedByPiece({});
     setSolverStatus("");
@@ -355,6 +374,26 @@ export default function IQNoodlesApp() {
         setSolverStatus("Solver timed out");
       } else {
         setSolverStatus("No solution found");
+      }
+    }, 10);
+  };
+
+  const onValidate = (): void => {
+    if (Object.keys(placedByPiece).length === 0) {
+      setSolverStatus("Place some pieces first");
+      return;
+    }
+    setSolverStatus("Validating...");
+    setTimeout(() => {
+      const result = validate(buildInitialPlacements(), 2000);
+      if (!result.placementsValid) {
+        setSolverStatus("Invalid: pieces overlap");
+      } else if (result.solvable === true) {
+        setSolverStatus(`Valid — solution exists (${result.timeMs.toFixed(0)}ms)`);
+      } else if (result.solvable === false) {
+        setSolverStatus("Dead end — no solution from here");
+      } else {
+        setSolverStatus("Valid placement (solver timed out, can't confirm)");
       }
     }, 10);
   };
@@ -479,31 +518,71 @@ export default function IQNoodlesApp() {
   const placedModels = useMemo(() => {
     return Object.entries(placedByPiece).map(([id, placement]) => {
       const pieceId = Number(id);
-      const center = placement.positions.reduce(
-        (acc, position) => {
-          const [row, col] = coordinator.toRowCol(position);
-          acc.row += row;
-          acc.col += col;
-          return acc;
-        },
-        { row: 0, col: 0 },
-      );
 
-      const count = placement.positions.length || 1;
+      // Identify the two gripping pins (the piece ends that grip board pins).
+      // Strategy: collect all distinct pin centers touched by the placement, then
+      // take the most-distant pair — these are always the two end-connector pins,
+      // not any pass-through pins whose cells happen to fall between them.
+      const touchedPins = new Map<number, [number, number]>(); // pinIndex → [row, col]
+      for (const pos of placement.positions) {
+        const pinIndex = positionToPinIndex.get(pos);
+        if (pinIndex !== undefined && !touchedPins.has(pinIndex)) {
+          touchedPins.set(pinIndex, pinCentersByIndex[pinIndex]);
+        }
+      }
+
+      let centerRow: number;
+      let centerCol: number;
+
+      const pinList = [...touchedPins.values()];
+      if (pinList.length >= 2) {
+        let maxDist2 = -1;
+        let bestA = pinList[0];
+        let bestB = pinList[1];
+        for (let i = 0; i < pinList.length; i++) {
+          for (let j = i + 1; j < pinList.length; j++) {
+            const dr = pinList[i][0] - pinList[j][0];
+            const dc = pinList[i][1] - pinList[j][1];
+            const d2 = dr * dr + dc * dc;
+            if (d2 > maxDist2) { maxDist2 = d2; bestA = pinList[i]; bestB = pinList[j]; }
+          }
+        }
+        centerRow = (bestA[0] + bestB[0]) / 2;
+        centerCol = (bestA[1] + bestB[1]) / 2;
+      } else {
+        // Fallback: average of all occupied cells
+        const sum = placement.positions.reduce(
+          (acc, position) => {
+            const [row, col] = coordinator.toRowCol(position);
+            acc.row += row;
+            acc.col += col;
+            return acc;
+          },
+          { row: 0, col: 0 },
+        );
+        const count = placement.positions.length || 1;
+        centerRow = sum.row / count;
+        centerCol = sum.col / count;
+      }
+
       const asset = PIECE_ASSET_BY_ID[pieceId];
-
+      const orientationIndex = placement.orientationIndex;
+      const override = offsetOverrides[pieceId]?.[orientationIndex];
       return {
         pieceId,
         colorHex: asset.colorHex,
         modelUrl: asset.objUrl,
-        centerRow: center.row / count,
-        centerCol: center.col / count,
+        centerRow,
+        centerCol,
+        orientationIndex,
         rotationSteps: placement.rotationSteps ?? 0,
         mirrored: placement.mirrored ?? false,
-        modelSize: getPlacementFootprintSize(placement.positions, board.width),
+        residualOffsetX: override?.x,
+        residualOffsetY: override?.y,
+        residualScale: override?.scale,
       };
     });
-  }, [coordinator, placedByPiece]);
+  }, [board.width, coordinator, offsetOverrides, pinCentersByIndex, placedByPiece, positionToPinIndex]);
 
   return (
     <div className="noodles-shell">
@@ -514,6 +593,7 @@ export default function IQNoodlesApp() {
           <button type="button" onClick={flipSelectedPiece}>Flip</button>
           <button type="button" onClick={clearBoard}>Clear</button>
           <button type="button" onClick={placeFirstFit}>Place First Fit</button>
+          <button type="button" onClick={onValidate}>Validate</button>
           <button type="button" onClick={onSolve}>Solve</button>
           <button type="button" onClick={onHint}>Hint</button>
           <button type="button" onClick={() => setShowDebug((v) => !v)}>{showDebug ? "Hide Debug Panel" : "Show Debug Panel"}</button>
@@ -546,6 +626,26 @@ export default function IQNoodlesApp() {
         {showDebug && debugPlacementInfo && (
           <pre className="debug-panel" aria-label="Placement debug panel">{debugPlacementInfo}</pre>
         )}
+        {showDebug && placedByPiece[selectedPieceId] && (() => {
+          const placedOrientation = placedByPiece[selectedPieceId]!.orientationIndex;
+          const override = offsetOverrides[selectedPieceId]?.[placedOrientation] ?? { x: 0, y: 0, scale: 1 };
+          const key = PIECE_ASSET_BY_ID[selectedPieceId].key;
+          return (
+            <div className="debug-panel" aria-label="Piece offset tuning">
+              <strong>Piece {key} orientation={placedOrientation} — copy to boardPieceTuning.ts</strong>
+              <pre>{`  ${selectedPieceId}: { ..., orientationOffsets: { ${placedOrientation}: { x: ${override.x}, y: ${override.y} } } }`}</pre>
+              <div className="controls-row">
+                <button type="button" onClick={() => nudgeScale(selectedPieceId, placedOrientation, -0.01)}>S−</button>
+                <button type="button" onClick={() => nudgeScale(selectedPieceId, placedOrientation, +0.01)}>S+</button>
+                <button type="button" onClick={() => nudgeOffset(selectedPieceId, placedOrientation, "x", -0.1)}>X−</button>
+                <button type="button" onClick={() => nudgeOffset(selectedPieceId, placedOrientation, "x", +0.1)}>X+</button>
+                <button type="button" onClick={() => nudgeOffset(selectedPieceId, placedOrientation, "y", -0.1)}>Y−</button>
+                <button type="button" onClick={() => nudgeOffset(selectedPieceId, placedOrientation, "y", +0.1)}>Y+</button>
+                <button type="button" onClick={() => setOffsetOverrides((p) => { const n = {...p}; delete n[selectedPieceId]; return n; })}>Reset</button>
+              </div>
+            </div>
+          );
+        })()}
       </header>
 
       <section className="board-panel">
@@ -572,15 +672,15 @@ export default function IQNoodlesApp() {
                 key={cell.position}
                 cx={cell.x}
                 cy={cell.y}
-                r={6}
+                r={BOARD_CELL_RADIUS}
                 className="board-cell"
               />
             ))}
 
             {pinCenters.map((pin) => (
               <g key={pin.pinIndex}>
-                <circle cx={pin.x} cy={pin.y} r={10} className="pin-ring" />
-                <circle cx={pin.x} cy={pin.y} r={4} className="pin-core" />
+                <circle cx={pin.x} cy={pin.y} r={PIN_RING_RADIUS} className="pin-ring" />
+                <circle cx={pin.x} cy={pin.y} r={PIN_CORE_RADIUS} className="pin-core" />
               </g>
             ))}
 

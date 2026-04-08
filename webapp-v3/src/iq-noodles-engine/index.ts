@@ -3,7 +3,7 @@ export { IQ_NOODLES_PIECES, MISSING_POSITIONS, POSITIONS_AROUND_PINS } from "./c
 export { MutableNoodlesBoard } from "./mutable-board";
 export { adjustOrientationToBoard, findAllOrientations, findAllOrientationsWithTransforms } from "./orientation";
 export { generatePlacementsForAllPieces, generatePlacementsForPiece } from "./placements";
-export { getHint, solve } from "./solver";
+export { getHint, solve, validate } from "./solver";
 export type { PieceDefinition, PieceOrientation, PieceOrientationWithTransform, PiecePlacement } from "./types";
 export { SegmentShape } from "./types";
-export type { NoodlesSolverResult } from "./solver";
+export type { NoodlesSolverResult, NoodlesValidationResult } from "./solver";

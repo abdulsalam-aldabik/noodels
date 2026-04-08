@@ -17,7 +17,7 @@ export class BoardCoordinator {
   readonly boardSize: number;
   readonly halfBoard: number;
 
-  constructor(boardWidth: number, boardHeight: number, cellSize = 28, boardPadding = 20) {
+  constructor(boardWidth: number, boardHeight: number, cellSize = 28, boardPadding = 40) {
     this.boardWidth = boardWidth;
     this.boardHeight = boardHeight;
     this.cellSize = cellSize;

@@ -54,7 +54,7 @@ body {
 
 .merged-board {
   position: relative;
-  width: min(100%, 640px);
+  width: min(100%, 80vmin);
   aspect-ratio: 1 / 1;
   overflow: hidden;
   border-radius: 14px;

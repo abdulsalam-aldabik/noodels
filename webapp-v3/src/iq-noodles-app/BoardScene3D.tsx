@@ -6,7 +6,7 @@ import type { BoardCoordinator } from "./boardCoordinator";
 import { getBoardPieceTuning } from "./boardPieceTuning";
 import PieceModel3D from "./PieceModel3D";
 
-interface PlacedModel {
+export interface PlacedModel {
   pieceId: number;
   colorHex: string;
   modelUrl: string;
@@ -14,7 +14,12 @@ interface PlacedModel {
   centerCol: number;
   rotationSteps: 0 | 1 | 2 | 3;
   mirrored: boolean;
-  modelSize: number;
+  orientationIndex: number;
+  residualOffsetX?: number;
+  residualOffsetY?: number;
+  residualScale?: number;
+  spanRows?: number;
+  spanCols?: number;
 }
 
 interface BoardScene3DProps {
@@ -48,9 +53,9 @@ export default function BoardScene3D({
 
         <Suspense fallback={null}>
           {placedModels.map((model) => {
-            const world = coordinator.rowColToWorldPoint(model.centerRow, model.centerCol);
-
             const tuning = getBoardPieceTuning(model.pieceId);
+
+            // Compute total orientation
             const totalMirrored = model.mirrored !== tuning.baseMirrored;
             const rawSteps = (model.rotationSteps + tuning.baseRotationSteps + 4) % 4;
             const mirroredAdjustedSteps = ((totalMirrored && tuning.invertRotationWhenMirrored)
@@ -61,20 +66,28 @@ export default function BoardScene3D({
               : mirroredAdjustedSteps) as 0 | 1 | 2 | 3;
             const rotationAngle = totalSteps * (Math.PI / 2);
 
-            const markerDiameter = coordinator.cellSize * (17 / 28);
-            const baseSize = (Math.max(1, model.modelSize) - 1) * coordinator.cellSize + markerDiameter;
-            const targetSize = baseSize * 0.95 * tuning.boardScale;
+            // World position
+            const world = coordinator.rowColToWorldPoint(model.centerRow, model.centerCol);
+            // Offsets are world-space corrections, looked up by orientationIndex so each
+            // orientation has its own calibrated value — no rotation math needed.
+            const GLOBAL_OFFSET_X = -0.5;
+            const orientationOffset = tuning.orientationOffsets?.[model.orientationIndex]
+              ?? { x: model.residualOffsetX ?? tuning.residualOffsetX ?? 0,
+                   y: model.residualOffsetY ?? tuning.residualOffsetY ?? 0 };
+            const worldOffsetX = (GLOBAL_OFFSET_X + orientationOffset.x) * coordinator.cellSize;
+            const worldOffsetY = orientationOffset.y * coordinator.cellSize;
+            const scale = model.residualScale ?? tuning.residualScale ?? 1;
 
             return (
               <PieceModel3D
                 key={`${model.pieceId}-${model.rotationSteps}-${Number(model.mirrored)}-${model.centerRow}-${model.centerCol}`}
                 modelUrl={model.modelUrl}
                 colorHex={model.colorHex}
-                position={[world.x, world.y, world.z]}
-                targetSize={targetSize}
+                pieceId={model.pieceId}
+                position={[world.x + worldOffsetX, world.y + worldOffsetY, world.z]}
                 rotationZ={rotationAngle}
                 mirrored={totalMirrored}
-                normalizationMode="xy"
+                residualScale={scale}
               />
             );
           })}

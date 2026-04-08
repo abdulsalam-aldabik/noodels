@@ -1,15 +1,24 @@
 export interface BoardPieceTuning {
   baseRotationSteps: 0 | 1 | 2 | 3;
   baseMirrored: boolean;
-  boardScale: number;
   invertRotationWhenMirrored?: boolean;
   swapEvenStepsWhenMirrored?: boolean;
+  /** Small uniform scale correction after the deterministic pipeline. Default 1. */
+  residualScale?: number;
+  /**
+   * Per-orientationIndex world-space offset corrections (cell units).
+   * Key = placement.orientationIndex. Falls back to residualOffsetX/Y if key absent.
+   */
+  orientationOffsets?: Record<number, { x: number; y: number }>;
+  /** Fallback X offset (cell units) for orientations not in orientationOffsets. Default 0. */
+  residualOffsetX?: number;
+  /** Fallback Y offset (cell units) for orientations not in orientationOffsets. Default 0. */
+  residualOffsetY?: number;
 }
 
 const DEFAULT_BOARD_TUNING: BoardPieceTuning = {
   baseRotationSteps: 0,
   baseMirrored: false,
-  boardScale: 1,
   invertRotationWhenMirrored: false,
   swapEvenStepsWhenMirrored: false,
 };
@@ -20,17 +29,17 @@ const DEFAULT_BOARD_TUNING: BoardPieceTuning = {
 // baseRotationSteps: offset (in 90° steps) applied to align the model's natural
 // orientation with the engine's base orientation (rotationSteps=0, mirrored=false).
 export const BOARD_PIECE_TUNING_BY_ID: Record<number, BoardPieceTuning> = {
-  0:  { baseRotationSteps: 1, baseMirrored: true,  boardScale: 1, invertRotationWhenMirrored: true },
-  1:  { baseRotationSteps: 0, baseMirrored: false,  boardScale: 1, invertRotationWhenMirrored: false },
-  2:  { baseRotationSteps: 3, baseMirrored: true,  boardScale: 1, invertRotationWhenMirrored: true },
-  3:  { baseRotationSteps: 1, baseMirrored: true,  boardScale: 1, invertRotationWhenMirrored: true },
-  4:  { baseRotationSteps: 0, baseMirrored: false,  boardScale: 1, invertRotationWhenMirrored: false },
-  5:  { baseRotationSteps: 0, baseMirrored: false, boardScale: 1, invertRotationWhenMirrored: false, swapEvenStepsWhenMirrored: true },
-  6:  { baseRotationSteps: 1, baseMirrored: false, boardScale: 1, invertRotationWhenMirrored: true },
-  7:  { baseRotationSteps: 0, baseMirrored: true,  boardScale: 1, invertRotationWhenMirrored: true },
-  8:  { baseRotationSteps: 3, baseMirrored: true,  boardScale: 1, invertRotationWhenMirrored: true },
-  9:  { baseRotationSteps: 0, baseMirrored: false, boardScale: 1, invertRotationWhenMirrored: false, swapEvenStepsWhenMirrored: true },
-  10: { baseRotationSteps: 2, baseMirrored: true,  boardScale: 1, invertRotationWhenMirrored: true },
+  0:  { baseRotationSteps: 1, baseMirrored: true,  invertRotationWhenMirrored: true,  orientationOffsets: { 0: { x:  0.1, y: -0.4 } } },
+  1:  { baseRotationSteps: 0, baseMirrored: false, invertRotationWhenMirrored: false, orientationOffsets: { 0: { x:  0,   y: -0.3 } } },
+  2:  { baseRotationSteps: 3, baseMirrored: true,  invertRotationWhenMirrored: true,  orientationOffsets: { 0: { x:  0.5, y:  0   } } },
+  3:  { baseRotationSteps: 1, baseMirrored: true,  invertRotationWhenMirrored: true,  orientationOffsets: { 0: { x:  0.5, y:  0   } } },
+  4:  { baseRotationSteps: 0, baseMirrored: false, invertRotationWhenMirrored: false, orientationOffsets: { 0: { x:  0.6, y: -0.6 } } },
+  5:  { baseRotationSteps: 0, baseMirrored: false, invertRotationWhenMirrored: false, swapEvenStepsWhenMirrored: true, orientationOffsets: { 0: { x: -0.1, y:  0.5 } } },
+  6:  { baseRotationSteps: 1, baseMirrored: false, invertRotationWhenMirrored: true,  orientationOffsets: { 0: { x:  0,   y:  0   } } },
+  7:  { baseRotationSteps: 0, baseMirrored: true,  invertRotationWhenMirrored: true,  orientationOffsets: { 0: { x: -0.9, y: -0.5 } } },
+  8:  { baseRotationSteps: 3, baseMirrored: true,  invertRotationWhenMirrored: true,  orientationOffsets: { 0: { x:  0.1, y:  0   } } },
+  9:  { baseRotationSteps: 0, baseMirrored: false, invertRotationWhenMirrored: false, swapEvenStepsWhenMirrored: true, orientationOffsets: { 0: { x: -0.1, y: -0.5 } } },
+  10: { baseRotationSteps: 2, baseMirrored: true,  invertRotationWhenMirrored: true,  orientationOffsets: { 0: { x:  0,   y:  0.4 } } },
 };
 
 export function getBoardPieceTuning(pieceId: number): BoardPieceTuning {
