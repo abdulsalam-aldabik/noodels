@@ -1,0 +1,100 @@
+=== Per-piece analysis ===
+
+Piece J (id=0): 11887 vertices
+  Model bbox: X[-41.03, -4.57] Y[-34.14, -8.36]
+  Model size: 36.45 x 25.78, center: (-22.80, -21.25)
+  Board world: X[-126, -70] Y[98, 182]
+  Board size: 56 x 84, center: (-98, 140)
+  Scale X: 1.5362, Scale Y: 3.2580
+
+Piece C (id=1): 12488 vertices
+  Model bbox: X[-41.03, 10.62] Y[-49.35, -34.24]
+  Model size: 51.65 x 15.10, center: (-15.20, -41.80)
+  Board world: X[-70, 70] Y[126, 154]
+  Board size: 140 x 28, center: (0, 140)
+  Scale X: 2.7107, Scale Y: 1.8540
+
+Piece H (id=2): 12337 vertices
+  Model bbox: X[15.25, 56.23] Y[-60.02, -34.24]
+  Model size: 40.98 x 25.77, center: (35.74, -47.13)
+  Board world: X[42, 98] Y[70, 182]
+  Board size: 56 x 112, center: (70, 126)
+  Scale X: 1.3666, Scale Y: 4.3456
+
+Piece B (id=3): 14334 vertices
+  Model bbox: X[-25.82, 15.15] Y[-75.23, -38.78]
+  Model size: 40.98 x 36.45, center: (-5.34, -57.00)
+  Board world: X[98, 182] Y[14, 126]
+  Board size: 84 x 112, center: (140, 70)
+  Scale X: 2.0500, Scale Y: 3.0724
+
+Piece A (id=4): 14180 vertices
+  Model bbox: X[15.25, 56.23] Y[-120.83, -79.85]
+  Model size: 40.98 x 40.98, center: (35.74, -100.34)
+  Board world: X[-98, 14] Y[-14, 98]
+  Board size: 112 x 112, center: (-42, 42)
+  Scale X: 2.7333, Scale Y: 2.7333
+
+Piece K (id=5): 15067 vertices
+  Model bbox: X[-56.24, -30.46] Y[-79.75, -38.79]
+  Model size: 25.78 x 40.96, center: (-43.35, -59.27)
+  Board world: X[-182, -126] Y[-42, 70]
+  Board size: 56 x 112, center: (-154, 14)
+  Scale X: 2.1720, Scale Y: 2.7343
+
+Piece I (id=6): 14411 vertices
+  Model bbox: X[-30.36, -0.05] Y[-105.63, -53.98]
+  Model size: 30.31 x 51.65, center: (-15.20, -79.80)
+  Board world: X[-70, 70] Y[-42, 42]
+  Board size: 140 x 84, center: (0, 0)
+  Scale X: 4.6196, Scale Y: 1.6264
+
+Piece G (id=7): 14945 vertices
+  Model bbox: X[19.78, 56.23] Y[-79.75, -49.45]
+  Model size: 36.45 x 30.31, center: (38.00, -64.60)
+  Board world: X[98, 182] Y[-98, -14]
+  Board size: 84 x 84, center: (140, -56)
+  Scale X: 2.3043, Scale Y: 2.7718
+
+Piece D (id=8): 14306 vertices
+  Model bbox: X[0.05, 25.83] Y[-120.83, -69.20]
+  Model size: 25.78 x 51.63, center: (12.94, -95.02)
+  Board world: X[-70, 70] Y[-98, -42]
+  Board size: 140 x 56, center: (0, -70)
+  Scale X: 5.4300, Scale Y: 1.0847
+
+Piece F (id=9): 16045 vertices
+  Model bbox: X[-56.23, -4.57] Y[-120.84, -79.85]
+  Model size: 51.66 x 40.99, center: (-30.40, -100.35)
+  Board world: X[-182, -42] Y[-182, -70]
+  Board size: 140 x 112, center: (-112, -126)
+  Scale X: 2.7102, Scale Y: 2.7327
+
+Piece E (id=10): 14255 vertices
+  Model bbox: X[-10.62, 41.03] Y[-34.14, -8.36]
+  Model size: 51.65 x 25.78, center: (15.20, -21.25)
+  Board world: X[-14, 126] Y[-182, -126]
+  Board size: 140 x 56, center: (56, -154)
+  Scale X: 2.7107, Scale Y: 2.1720
+
+=== Global scale analysis ===
+
+If models share a global coordinate system, then:
+  worldX = modelX * S + Ox
+  worldY = modelY * S + Oy
+
+X: scale=2.2830, offset=-1.1083
+Y: scale=1.2317, offset=88.4696
+
+Residuals (predicted - actual) in world units:
+  J: errX=44.84, errY=-77.71, dist=89.72
+  C: errX=-35.82, errY=-103.01, dist=109.06
+  H: errX=10.49, errY=-95.58, dist=96.15
+  B: errX=-153.29, errY=-51.74, dist=161.79
+  A: errX=122.49, errY=-77.12, dist=144.74
+  K: errX=53.93, errY=1.47, dist=53.95
+  I: errX=-35.82, errY=-9.82, dist=37.14
+  G: errX=-54.35, errY=64.90, dist=84.65
+  D: errX=28.44, errY=41.44, dist=50.26
+  F: errX=41.49, errY=90.88, dist=99.90
+  E: errX=-22.40, errY=216.29, dist=217.45
