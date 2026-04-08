@@ -71,3 +71,4 @@ runs/
 *.zip
 *.tar.gz
 *.torchscript
+venv-streamlit311

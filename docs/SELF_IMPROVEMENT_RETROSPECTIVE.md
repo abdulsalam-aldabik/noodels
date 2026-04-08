@@ -2,8 +2,8 @@
 
 ## Smart NV - IQ Noodles Engine and 3D Board Integration Iterations
 
-Date: 2026-04-07
-Scope: Fresh IQ Noodles implementation in webapp-v3, Java parity engine port, interactive board flow, OBJ-based 3D rendering, merged 2D+3D board attempts, repeated orientation/scale correction passes, and final piece-level mirrored rotation stabilization.
+Date: 2026-04-02
+Scope: Fresh IQ Noodles implementation in webapp-v3, Java parity engine port, interactive board flow, OBJ-based 3D rendering, merged 2D+3D board attempts, and repeated orientation/scale correction passes.
 Goal: Record exactly what was implemented, what failed repeatedly, what improved, and how to avoid the same loop next time.
 
 ---
@@ -59,8 +59,8 @@ Goal: Record exactly what was implemented, what failed repeatedly, what improved
 - Extended engine orientation pipeline to carry explicit transform metadata (`rotationSteps`, `mirrored`) into placements.
 - Replaced UI-side orientation heuristics with engine metadata consumption in app placement logic.
 - Separated board-only visual tuning from inventory by introducing `boardPieceTuning.ts`.
-- Added per-piece mirrored inversion control (`invertRotationWhenMirrored`).
-- Added per-piece mirrored even-step swap control (`swapEvenStepsWhenMirrored`) to fix alternating mismatch on pieces 5 and 9.
+- Added configurable transform composition order (`mirrorAfterRotation`) per piece.
+- Added configurable rotation direction sign (`rotationDirection`) per piece to fix alternating mismatch on pieces 5 and 9.
 - Validated changes with passing tests and production build after each iteration.
 
 ---
@@ -92,10 +92,9 @@ Goal: Record exactly what was implemented, what failed repeatedly, what improved
 - Failure mode: compile and tests pass while visual quality is still unacceptable.
 - Impact: false completion signal and repeated rework loops.
 
-### G) Merged-board behavior instability (resolved)
-- Failure mode: merged board concept worked structurally, but 3D rotation and size parity were not initially stable enough.
-- Impact: user reported the result did not work despite technical pass criteria.
-- Resolution: piece-level mirrored-step tuning plus transform cleanup produced stable final behavior across rotate cycles.
+### G) Merged-board behavior still unstable
+- Failure mode: merged board concept works structurally, but 3D rotation and size parity are still not stable enough.
+- Impact: user reports the current result "does not work" despite technical pass criteria.
 
 ### H) Uniform transform assumptions across all pieces
 - Failure mode: one global mirror/rotation composition strategy did not work for all pieces.
@@ -129,7 +128,7 @@ Goal: Record exactly what was implemented, what failed repeatedly, what improved
 ### F) Rotation/mirror parity pipeline became explicit and debuggable
 - Orientation behavior now flows from engine metadata instead of ad hoc UI derivation.
 - Board-only tuning no longer mutates inventory visuals.
-- Piece-specific mirrored-step controls resolved the observed alternating mismatch pattern for problematic pieces and passed final manual validation.
+- Piece-specific composition and rotation direction controls resolved the observed alternating mismatch pattern for problematic pieces.
 
 ---
 
@@ -151,7 +150,7 @@ Goal: Record exactly what was implemented, what failed repeatedly, what improved
 2. Keep one calibration table per piece (base yaw, base mirror, composition order, rotation direction) and freeze constants after visual pass.
 3. Add screenshot-based visual regression checks for 5 fixed merged-board placements.
 4. Keep one stable camera/world-scale preset and tune only piece transform constants.
-5. Keep explicit acceptance gate: no side-view artifacts and no alternating rotate mismatch in canonical orientation checks.
+5. Add explicit acceptance gate: no side-view artifacts and no alternating rotate mismatch in all canonical orientation checks.
 
 ### Short-term (next sprint)
 1. Integrate exact anchor-cell alignment for 3D models so OBJ center is not used as placement anchor.
@@ -185,10 +184,10 @@ Goal: Record exactly what was implemented, what failed repeatedly, what improved
 - Piece class/index/color/OBJ mapping is now explicit and correct per requested order.
 - 2D board pins/dots are restored and merged-board direction is implemented.
 - Engine-driven orientation metadata (`rotationSteps`, `mirrored`) is wired through placements and consumed by UI.
-- Board-only piece tuning includes base rotation/mirror with mirrored inversion and mirrored even-step swap controls.
-- Latest targeted fixes resolved alternating mirrored rotate mismatch for pieces 5 and 9 using piece-specific tuning flags.
+- Board-only piece tuning includes base rotation/mirror, composition order, and rotation direction controls.
+- Latest targeted fix addressed alternating rotate mismatch for pieces 5 and 9 by using piece-specific transform settings.
 - Build status: passing. Test status: passing (15/15).
-- Remaining work: add lightweight visual regression artifacts/screenshots to guard against future regressions.
+- Remaining work: capture visual regression artifacts/screenshots and lock constants after final manual acceptance sweep.
 
 ---
 

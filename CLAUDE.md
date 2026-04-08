@@ -48,7 +48,7 @@ ImageCapture → runInference (ONNX/YOLO) → ResultsOverlay (user calibrates 4 
 |------|------|
 | `App.tsx` | Orchestrates phases: capture → results → board → solved |
 | `inference.ts` | ONNX Runtime Web integration, YOLO preprocessing, mask decoding |
-| `board/board.ts` | IQ Noodles 14×14 grid definition (81 valid cells, 21 pins) |
+| `board/board.ts` | IQ Noodles 14×14 grid definition (84 valid cells, 21 pins) |
 | `board/pieces.ts` | 11 piece definitions |
 | `board/orientations.ts` | All piece rotations/flips |
 | `board/placements.ts` | Valid piece placements on board |
@@ -88,7 +88,7 @@ Python 3.11 + FastAPI + PostgreSQL. Will handle multi-game solver variants (Algo
 
 ## Game Grid Models
 
-- **IQ Noodles:** 14×14 grid, only 81 cells valid, 21 intersection pins, 11 curved pieces. Graph-based model.
+- **IQ Noodles:** 14×14 grid, 84 cells valid, 21 intersection pins, 11 curved pieces. Graph-based model.
 - **IQ Puzzler Pro:** 5×11 = 55-cell standard polyomino grid, 12 pieces.
 - **IQ Waves:** 4×8 = 32 H/V slot grid, 8 wave pieces.
 

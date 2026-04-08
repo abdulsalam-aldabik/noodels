@@ -1,6 +1,6 @@
 # Project Context — IQ Noodles Detection System
 
-> Comprehensive findings from deep-dive analysis (2026-03-30), updated 2026-03-30.
+> Comprehensive findings from deep-dive analysis (2026-03-30), updated 2026-04-07.
 > Purpose: onboarding reference, architecture record, root-cause history.
 
 **Hardware constraint:** The physical toy is a final commercial product. Nothing can be added to it (no markers, stickers, ArUco tags, etc.). All board localization must rely solely on existing visual features: the board outline shape and the **hinge** at the top of the board.
@@ -16,7 +16,7 @@
 | Property | Value |
 |----------|-------|
 | Grid size | 14 × 14 (196 total positions) |
-| Valid cells | 81 (108 are permanently blocked/missing) |
+| Valid cells | 84 (112 are permanently blocked/missing) |
 | Physical pins | 21 |
 | Pieces | 11 (labels A–K) |
 
@@ -69,7 +69,13 @@ Pin 19: (-1.8,  5.4)   Pin 20: ( 1.8,  5.4)
 | J | 10 | (182, 48, 72) Dark Red |
 | K | 8 | (149, 212, 80) Yellow-Green |
 
-Each piece has up to 8 distinct orientations (4 rotations × optional reflection).
+Each piece has up to 8 distinct orientations (4 rotations x optional reflection).
+
+### webapp-v3 Status Note (2026-04-07)
+
+- Engine parity and build checks are passing.
+- 3D piece rotation/mirror behavior has been stabilized using per-piece board tuning in `webapp-v3/src/iq-noodles-app/boardPieceTuning.ts`.
+- Final manual verification confirmed full rotate-cycle correctness for previously problematic mirrored cases (notably pieces 5 and 9).
 
 ---
 

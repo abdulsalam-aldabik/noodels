@@ -586,7 +586,7 @@ def generate_dataset():
         
         hide_all_pieces()
         placed_boxes_fast = []
-        valid_placement = True
+        successfully_placed = []
         
         for p_name in active_pieces:
             obj = bpy.data.objects.get(p_name)
@@ -630,11 +630,12 @@ def generate_dataset():
                     
             if not placed:
                 obj.hide_render = True; obj.hide_viewport = True
-                valid_placement = False
-                
-        if not valid_placement:
-            print(f"WARNING at Image {i}: Could not place all pieces! mathematical overlap. Skipping this frame.")
-            continue
+                print(f"  INFO Image {i}: Could not place '{p_name}', rendering without it.")
+            else:
+                successfully_placed.append(p_name)
+        
+        # Use only the pieces that were actually placed
+        active_pieces = successfully_placed
 
         scene.frame_set(i)
         

@@ -1,7 +1,7 @@
 # Self-Improvement Weekly Template
 
 Project: Smart NV - IQ Noodles
-Week of: 2026-03-30 to 2026-04-07
+Week of: 2026-03-30 to 2026-04-05
 Owner: Abdul + Copilot Pairing Session
 
 ---
@@ -38,7 +38,7 @@ Success criteria:
 | EXP-12 | Reworked 3D piece transform stack to force top-down rotation plane | Eliminate side-view and strip-like rotation artifacts | `PieceModel3D.tsx`, `BoardScene3D.tsx` | Partial |
 | EXP-13 | Added engine-driven orientation metadata pipeline (`rotationSteps`, `mirrored`) through placements | Remove UI heuristic drift and make orientation source-of-truth explicit | `orientation.ts`, `placements.ts`, `types.ts`, `IQNoodlesApp.tsx` | Done |
 | EXP-14 | Split board-only tuning from inventory transforms | Prevent board tuning from mutating inventory visuals | `boardPieceTuning.ts`, `pieceAssets.ts`, `PieceModel3D.tsx`, `BoardScene3D.tsx` | Done |
-| EXP-15 | Added per-piece mirrored-step correction tuning | Resolve piece-specific alternating mismatch (pieces 5 and 9) | `boardPieceTuning.ts`, `PieceModel3D.tsx`, `BoardScene3D.tsx` | Done |
+| EXP-15 | Added per-piece transform composition and rotation-direction tuning | Resolve piece-specific alternating mismatch (pieces 5 and 9) | `boardPieceTuning.ts`, `PieceModel3D.tsx`, `BoardScene3D.tsx` | Done |
 
 ---
 
@@ -77,7 +77,7 @@ Success criteria:
 - What happened: Pieces 5 and 9 alternated between fitting and flipped output on consecutive rotate steps.
 - Failure signal: Pattern observed as 1st fits, 2nd wrong, 3rd fits, 4th wrong.
 - Suspected root cause: Those pieces required piece-specific composition and step-direction handling.
-- Evidence (logs/screenshots/metrics): Runtime reproduction plus final stabilization after per-piece `invertRotationWhenMirrored` and `swapEvenStepsWhenMirrored` settings.
+- Evidence (logs/screenshots/metrics): Runtime reproduction plus final stabilization after per-piece `mirrorAfterRotation` and `rotationDirection` settings.
 
 ---
 
@@ -101,7 +101,7 @@ Success criteria:
 - Change: Restored 2D board pins/dots while keeping 3D pieces in flow.
 - Why it helped: The 2D board remains a reliable positional reference during debugging.
 - Before: Pure 3D view removed trusted board cues.
-- After: Spatial reference improved and final 3D rotation parity was verified in manual orientation checks.
+- After: Spatial reference improved, even though final 3D rotation parity is still unresolved.
 - Confidence level (Low/Med/High): Med
 
 ### Improvement D
@@ -112,11 +112,11 @@ Success criteria:
 - Confidence level (Low/Med/High): High
 
 ### Improvement E
-- Change: Added piece-specific mirrored-step correction controls.
+- Change: Added piece-specific rotation direction and transform composition controls.
 - Why it helped: Fixed alternating mismatch behavior on hard pieces without breaking inventory rendering.
 - Before: 90/270 step parity was unstable for pieces 5 and 9.
-- After: Full rotate cycle behavior aligned for all orientations after final manual validation.
-- Confidence level (Low/Med/High): High
+- After: Full rotate cycle behavior aligned for those pieces in current manual validation.
+- Confidence level (Low/Med/High): Med
 
 ---
 
@@ -166,28 +166,28 @@ Success criteria:
 5. Keep 2D board features visible while calibrating 3D.
   Reason: 2D pins/dots are a stable visual reference for placement and orientation debugging.
   Impact: Merged-board direction kept, but requires instrumentation-driven 3D calibration to finish.
-6. Introduce piece-specific mirrored-step controls only after engine metadata is authoritative.
+6. Introduce piece-specific transform controls only after engine metadata is authoritative.
   Reason: Engine-first orientation data avoids masking logic problems with visual-only hacks.
-  Impact: Piece 5/9 mismatch fully resolved with controlled per-piece tuning.
+  Impact: Piece 5/9 mismatch addressed with controlled per-piece tuning.
 
 ---
 
 ## 8) Next Week Plan (Actionable)
 
-1. Add a lightweight visual regression checklist (saved screenshots) for fixed board states to prevent orientation regressions.
-2. Keep board scene constants frozen (camera, unit scale, targetSize) and only tune per-piece settings if new evidence appears.
-3. Document piece-level tuning rationale in `boardPieceTuning.ts` comments to preserve intent for future contributors.
-4. Continue solver/hint integration on top of the now-stable render pipeline.
+1. Add per-piece 3D debug overlay: pieceId/orientationIndex/derivedRotation/mirror near each placed model.
+2. Add piece-specific anchor and base-rotation calibration table and lock constants only after 5 canonical placement checks per piece.
+3. Build a tiny visual regression suite (saved screenshots) for fixed merged-board states to prevent orientation regressions.
+4. Freeze board scene constants first (unit/zoom/targetSize), then tune only per-piece transform constants.
 
 Risks:
 - Overfitting render constants to one screen size/device.
 - Continuing to mix camera-scale and model-scale tuning in the same change.
-- False confidence from build/test green without running a quick visual sanity sweep.
+- False confidence from build/test green while visual parity is still wrong.
 
 Mitigation:
 - Keep camera preset fixed while tuning only per-piece transforms.
 - Verify on desktop + mobile viewport snapshots before finalizing constants.
-- Keep explicit acceptance gate: no side-view artifacts in canonical orientation checks.
+- Add explicit acceptance gate: no side-view artifacts in any of the 5 canonical orientation cases.
 
 ---
 
