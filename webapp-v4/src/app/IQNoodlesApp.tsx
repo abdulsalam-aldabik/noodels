@@ -66,8 +66,6 @@ export default function IQNoodlesApp() {
 
   // ── App mode ─────────────────────────────────────────────────────────────
 
-  const [mode, setMode] = useState<"manual" | "scan">("manual");
-
   // ── Core state ───────────────────────────────────────────────────────────
 
   const [selectedPieceId, setSelectedPieceId] = useState(0);
@@ -160,7 +158,6 @@ export default function IQNoodlesApp() {
     if (result.hint) {
       setSelectedPieceId(result.hint.nextPieceId);
     }
-    setMode("manual");
   }
 
   // ── Hover preview ────────────────────────────────────────────────────────
@@ -360,23 +357,6 @@ export default function IQNoodlesApp() {
 
   // ── Render ────────────────────────────────────────────────────────────────
 
-  // Scan mode takes over the full shell
-  if (mode === "scan") {
-    return (
-      <>
-        <SharedInventoryCanvas />
-        <div className="noodles-shell">
-          <div className="noodles-header">
-            <CaptureView
-              onScanComplete={onScanComplete}
-              onCancel={() => setMode("manual")}
-            />
-          </div>
-        </div>
-      </>
-    );
-  }
-
   return (
     <>
     <SharedInventoryCanvas />
@@ -384,10 +364,9 @@ export default function IQNoodlesApp() {
       <header className="noodles-header">
         <div className="noodles-title-row">
           <h1>IQ Noodles</h1>
-          <button className="capture-btn capture-btn--primary" onClick={() => setMode("scan")}>
-            Scan Board
-          </button>
         </div>
+
+        <CaptureView onScanComplete={onScanComplete} />
 
         <ControlBar
           onRotate={() => rotate(selectedPieceId)}

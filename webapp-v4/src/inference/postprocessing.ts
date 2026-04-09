@@ -12,6 +12,7 @@ import type { RawDetection, LetterboxParams } from "./inferenceTypes";
 export interface PostprocessDebug {
   tensorShape0: number[];
   tensorShape1: number[];
+  format: "class_logits" | "direct_classid";
   /** Whether rows are the first axis ([1, rows, anchors]) or second ([1, anchors, rows]). */
   layout: "rows_first" | "anchors_first";
   numRows: number;
@@ -36,7 +37,10 @@ export interface PostprocessDebug {
 interface PreNMSBox {
   classId: number;
   confidence: number;
-  cx: number; cy: number; w: number; h: number;
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
   coeffs: Float32Array;
 }
 
@@ -108,23 +112,71 @@ function sigmoid(x: number): number {
 
 function decodeBoxes(
   output0: Tensor,
+  output1: Tensor,
   debug: Partial<PostprocessDebug>,
 ): PreNMSBox[] {
   const data = output0.data as Float32Array;
   const { layout, rows, anchors } = detectLayout(output0);
-  const numMaskCoeffs = Math.max(0, rows - 4 - NUM_CLASSES);
-  const preSigmoid = detectPreSigmoid(data, anchors, layout, rows);
+  const protoCount = output1.dims[1] ?? 32;
+  const isDirectFormat = rows >= 6 && rows - 6 === protoCount;
+  const numMaskCoeffs = isDirectFormat
+    ? protoCount
+    : Math.max(0, rows - 4 - NUM_CLASSES);
+  const preSigmoid = isDirectFormat ? true : detectPreSigmoid(data, anchors, layout, rows);
 
   debug.layout = layout;
   debug.numRows = rows;
   debug.numAnchors = anchors;
   debug.numMaskCoeffs = numMaskCoeffs;
   debug.scoresPreSigmoid = preSigmoid;
+  debug.format = isDirectFormat ? "direct_classid" : "class_logits";
 
   const maxConfByClass: Record<number, number> = {};
   let maxBoardScore = 0;
   let aboveThreshold = 0;
   const boxes: PreNMSBox[] = [];
+
+  if (isDirectFormat) {
+    for (let a = 0; a < anchors; a++) {
+      const x1 = getVal(data, 0, a, layout, rows, anchors);
+      const y1 = getVal(data, 1, a, layout, rows, anchors);
+      const x2 = getVal(data, 2, a, layout, rows, anchors);
+      const y2 = getVal(data, 3, a, layout, rows, anchors);
+      const score = getVal(data, 4, a, layout, rows, anchors);
+      const classId = Math.round(getVal(data, 5, a, layout, rows, anchors));
+
+      if (classId < 0 || classId >= NUM_CLASSES) continue;
+      if (score < CONFIDENCE_GATE) continue;
+
+      aboveThreshold++;
+      if (!maxConfByClass[classId] || score > maxConfByClass[classId]) {
+        maxConfByClass[classId] = score;
+      }
+      if (classId === 11 && score > maxBoardScore) {
+        maxBoardScore = score;
+      }
+
+      const coeffs = new Float32Array(numMaskCoeffs);
+      for (let m = 0; m < numMaskCoeffs; m++) {
+        coeffs[m] = getVal(data, 6 + m, a, layout, rows, anchors);
+      }
+
+      boxes.push({
+        classId,
+        confidence: score,
+        x1: Math.min(x1, x2),
+        y1: Math.min(y1, y2),
+        x2: Math.max(x1, x2),
+        y2: Math.max(y1, y2),
+        coeffs,
+      });
+    }
+
+    debug.maxBoardScore = maxBoardScore;
+    debug.aboveThreshold = aboveThreshold;
+    debug.maxConfByClass = maxConfByClass;
+    return boxes;
+  }
 
   for (let a = 0; a < anchors; a++) {
     let bestClass = -1;
@@ -152,15 +204,23 @@ function decodeBoxes(
 
     const cx = getVal(data, 0, a, layout, rows, anchors);
     const cy = getVal(data, 1, a, layout, rows, anchors);
-    const w  = getVal(data, 2, a, layout, rows, anchors);
-    const h  = getVal(data, 3, a, layout, rows, anchors);
+    const w = getVal(data, 2, a, layout, rows, anchors);
+    const h = getVal(data, 3, a, layout, rows, anchors);
 
     const coeffs = new Float32Array(numMaskCoeffs);
     for (let m = 0; m < numMaskCoeffs; m++) {
       coeffs[m] = getVal(data, 4 + NUM_CLASSES + m, a, layout, rows, anchors);
     }
 
-    boxes.push({ classId: bestClass, confidence: bestScore, cx, cy, w, h, coeffs });
+    boxes.push({
+      classId: bestClass,
+      confidence: bestScore,
+      x1: cx - w / 2,
+      y1: cy - h / 2,
+      x2: cx + w / 2,
+      y2: cy + h / 2,
+      coeffs,
+    });
   }
 
   debug.maxBoardScore = maxBoardScore;
@@ -173,15 +233,13 @@ function decodeBoxes(
 // ── NMS ───────────────────────────────────────────────────────────────────────
 
 function iou(a: PreNMSBox, b: PreNMSBox): number {
-  const ax1 = a.cx - a.w / 2, ay1 = a.cy - a.h / 2;
-  const ax2 = a.cx + a.w / 2, ay2 = a.cy + a.h / 2;
-  const bx1 = b.cx - b.w / 2, by1 = b.cy - b.h / 2;
-  const bx2 = b.cx + b.w / 2, by2 = b.cy + b.h / 2;
-  const ix1 = Math.max(ax1, bx1), iy1 = Math.max(ay1, by1);
-  const ix2 = Math.min(ax2, bx2), iy2 = Math.min(ay2, by2);
+  const ix1 = Math.max(a.x1, b.x1), iy1 = Math.max(a.y1, b.y1);
+  const ix2 = Math.min(a.x2, b.x2), iy2 = Math.min(a.y2, b.y2);
   const inter = Math.max(0, ix2 - ix1) * Math.max(0, iy2 - iy1);
   if (inter === 0) return 0;
-  return inter / (a.w * a.h + b.w * b.h - inter);
+  const areaA = Math.max(0, a.x2 - a.x1) * Math.max(0, a.y2 - a.y1);
+  const areaB = Math.max(0, b.x2 - b.x1) * Math.max(0, b.y2 - b.y1);
+  return inter / (areaA + areaB - inter);
 }
 
 function applyNMS(boxes: PreNMSBox[]): PreNMSBox[] {
@@ -202,6 +260,35 @@ function applyNMS(boxes: PreNMSBox[]): PreNMSBox[] {
       }
     }
   }
+  return kept;
+}
+
+function applyCrossClassPieceSuppression(boxes: PreNMSBox[]): PreNMSBox[] {
+  const sorted = [...boxes].sort((a, b) => b.confidence - a.confidence);
+  const kept: PreNMSBox[] = [];
+
+  for (const box of sorted) {
+    const isPiece = box.classId >= 0 && box.classId <= 10;
+    if (!isPiece) {
+      kept.push(box);
+      continue;
+    }
+
+    let overlapsExistingPiece = false;
+    for (const existing of kept) {
+      const existingIsPiece = existing.classId >= 0 && existing.classId <= 10;
+      if (!existingIsPiece) continue;
+      if (iou(box, existing) > 0.85) {
+        overlapsExistingPiece = true;
+        break;
+      }
+    }
+
+    if (!overlapsExistingPiece) {
+      kept.push(box);
+    }
+  }
+
   return kept;
 }
 
@@ -230,10 +317,10 @@ function decodeMask(
 
   const scaleX = maskW / 640;
   const scaleY = maskH / 640;
-  const mx1 = Math.max(0, Math.floor((box.cx - box.w / 2) * scaleX));
-  const my1 = Math.max(0, Math.floor((box.cy - box.h / 2) * scaleY));
-  const mx2 = Math.min(maskW - 1, Math.ceil((box.cx + box.w / 2) * scaleX));
-  const my2 = Math.min(maskH - 1, Math.ceil((box.cy + box.h / 2) * scaleY));
+  const mx1 = Math.max(0, Math.floor(box.x1 * scaleX));
+  const my1 = Math.max(0, Math.floor(box.y1 * scaleY));
+  const mx2 = Math.min(maskW - 1, Math.ceil(box.x2 * scaleX));
+  const my2 = Math.min(maskH - 1, Math.ceil(box.y2 * scaleY));
 
   const foreground: [number, number][] = [];
   for (let my = my1; my <= my2; my++) {
@@ -248,8 +335,8 @@ function decodeMask(
   }
 
   if (foreground.length === 0) {
-    const cx = (box.cx - params.padX) / params.scale;
-    const cy = (box.cy - params.padY) / params.scale;
+    const cx = ((box.x1 + box.x2) / 2 - params.padX) / params.scale;
+    const cy = ((box.y1 + box.y2) / 2 - params.padY) / params.scale;
     return { polygon: [[cx, cy]], centroid: [cx, cy] };
   }
 
@@ -311,17 +398,17 @@ export function decodeDetections(
     tensorShape1: [...output1.dims],
   };
 
-  const rawBoxes = decodeBoxes(output0, debugPartial);
-  const kept = applyNMS(rawBoxes);
+  const rawBoxes = decodeBoxes(output0, output1, debugPartial);
+  const kept = applyCrossClassPieceSuppression(applyNMS(rawBoxes));
 
   const numMaskCoeffs = debugPartial.numMaskCoeffs ?? 32;
 
   const detections: RawDetection[] = kept.map((box) => {
     const { polygon, centroid } = decodeMask(box, output1, params, numMaskCoeffs);
-    const x1 = (box.cx - box.w / 2 - params.padX) / params.scale;
-    const y1 = (box.cy - box.h / 2 - params.padY) / params.scale;
-    const x2 = (box.cx + box.w / 2 - params.padX) / params.scale;
-    const y2 = (box.cy + box.h / 2 - params.padY) / params.scale;
+    const x1 = (box.x1 - params.padX) / params.scale;
+    const y1 = (box.y1 - params.padY) / params.scale;
+    const x2 = (box.x2 - params.padX) / params.scale;
+    const y2 = (box.y2 - params.padY) / params.scale;
     return {
       classId: box.classId,
       confidence: box.confidence,
@@ -337,13 +424,14 @@ export function decodeDetections(
   }
 
   const debug: PostprocessDebug = {
-    tensorShape0: debugPartial.tensorShape0!,
-    tensorShape1: debugPartial.tensorShape1!,
-    layout: debugPartial.layout!,
-    numRows: debugPartial.numRows!,
-    numAnchors: debugPartial.numAnchors!,
+    tensorShape0: debugPartial.tensorShape0 ?? [...output0.dims],
+    tensorShape1: debugPartial.tensorShape1 ?? [...output1.dims],
+    format: debugPartial.format ?? "class_logits",
+    layout: debugPartial.layout ?? "rows_first",
+    numRows: debugPartial.numRows ?? 0,
+    numAnchors: debugPartial.numAnchors ?? 0,
     numMaskCoeffs,
-    scoresPreSigmoid: debugPartial.scoresPreSigmoid!,
+    scoresPreSigmoid: debugPartial.scoresPreSigmoid ?? false,
     maxBoardScore: debugPartial.maxBoardScore ?? 0,
     aboveThreshold: debugPartial.aboveThreshold ?? 0,
     afterNMS: detections.length,

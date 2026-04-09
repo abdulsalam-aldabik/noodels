@@ -18,7 +18,7 @@ export const CLASS_BOARD = 11;
 export const CLASS_HINGE = 12;
 
 // Filtering thresholds
-export const CONFIDENCE_GATE = 0.35;           // minimum class score to keep a detection
+export const CONFIDENCE_GATE = 0.2;            // minimum class score to keep a detection
 export const NMS_IOU_THRESHOLD = 0.45;         // IoU above which boxes are suppressed
 export const CELL_AMBIGUITY_RATIO = 1.2;       // 2nd-nearest / nearest distance ratio
 export const MAX_CELL_RADIUS = 0.7;            // board-grid units; centroid this far from a cell = drop

@@ -1,0 +1,4 @@
+"file","ts","sourceType","ok","stage","boardDetected","boardCornerSource","openCvReady","cvContourDetected","rectifiedSecondPassUsed","rectifiedDetectionsCount","selectedOrientation","mappedCount","confirmedCount","droppedCount","conflicts","solvable","totalMs"
+"scan-debug-2026-04-09T14-07-20-578Z.json","09/04/2026 14:07:20",,"True","","True","mask_quadrants","False","False","True","11","0","8","7","1","0","False","602,265000000596"
+"scan-debug-2026-04-09T14-09-17-587Z.json","09/04/2026 14:09:17",,"True","","True","mask_quadrants","False","False","True","11","0","8","7","1","0","False","951,359999999404"
+"scan-debug-latest.json","09/04/2026 14:09:17",,"True","","True","mask_quadrants","False","False","True","11","0","8","7","1","0","False","951,359999999404"

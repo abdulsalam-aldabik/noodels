@@ -1,0 +1,44 @@
+FILES_TOTAL=3 PARSED=3 PARSE_ERRORS=0
+
+SUMMARY_BY_STAGE:
+
+Name Count
+---- -----
+ok       3
+
+
+OPEN_CV_READY_DISTRIBUTION:
+
+Name  Count
+----  -----
+False     3
+
+
+CORNER_SOURCE_DISTRIBUTION:
+
+Name           Count
+----           -----
+mask_quadrants     3
+
+
+LATEST_25:
+
+File                                     SourceType   Ok Stage BoardConf CornerS
+                                                                         ource
+----                                     ----------   -- ----- --------- -------
+scan-debug-2026-04-09T14-09-17-587Z.json            True ok         0,90 mask_q…
+scan-debug-latest.json                              True ok         0,90 mask_q…
+scan-debug-2026-04-09T14-07-20-578Z.json            True ok         0,90 mask_q…
+
+
+ANOMALIES_OK_LOW_MAPPING:
+
+File                                     BoardConf CornerSource   Mapped Confirm
+                                                                              ed
+----                                     --------- ------------   ------ -------
+scan-debug-2026-04-09T14-09-17-587Z.json      0,90 mask_quadrants      8       7
+scan-debug-latest.json                        0,90 mask_quadrants      8       7
+scan-debug-2026-04-09T14-07-20-578Z.json      0,90 mask_quadrants      8       7
+
+
+

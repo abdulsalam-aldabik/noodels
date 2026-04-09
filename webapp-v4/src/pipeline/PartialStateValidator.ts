@@ -1,138 +1,78 @@
-import { BOARD_WIDTH, BOARD_HEIGHT } from "../engine/constants";
-import { generatePlacementsForPiece } from "../engine/placements";
 import { validate } from "../engine/solver";
 import type { PiecePlacement } from "../engine/types";
-import { MIN_CELL_CONFIDENCE } from "../inference/inferenceTypes";
 import type { MappedPiecePlacement, ValidationReport } from "../vision/visionTypes";
 
-const BOARD_CELLS = BOARD_WIDTH * BOARD_HEIGHT;
+const VALIDATE_TIMEOUT_MS = 1800;
 
-/**
- * Converts a MappedPiecePlacement's candidateCell to a solver-ready PiecePlacement
- * by selecting the valid placement from generatePlacementsForPiece() whose positions
- * contain the candidate cell and whose centroid is geometrically closest to the
- * detected board centroid.
- *
- * Returns null if no valid placement covers the candidate cell.
- */
-function resolveToEnginePlacement(mapped: MappedPiecePlacement): PiecePlacement | null {
-  const [targetRow, targetCol] = mapped.candidateCell;
-  const targetPos = targetRow * BOARD_WIDTH + targetCol;
-
-  const allPlacements = generatePlacementsForPiece(mapped.classId);
-
-  // Filter to placements that include the candidate cell
-  const covering = allPlacements.filter((p) => p.positions.includes(targetPos));
-  if (covering.length === 0) return null;
-
-  // Rank by how close the placement's geometric centroid is to the detected board centroid
-  const [detectedCol, detectedRow] = mapped.boardCentroid;
-
-  let best: PiecePlacement = covering[0];
-  let bestDist = Infinity;
-
-  for (const placement of covering) {
-    // Compute placement centroid in grid space
-    let sumRow = 0, sumCol = 0;
-    for (const pos of placement.positions) {
-      sumRow += Math.floor(pos / BOARD_WIDTH);
-      sumCol += pos % BOARD_WIDTH;
-    }
-    const avgRow = sumRow / placement.positions.length;
-    const avgCol = sumCol / placement.positions.length;
-
-    const dr = avgRow - detectedRow;
-    const dc = avgCol - detectedCol;
-    const dist = dr * dr + dc * dc;
-
-    if (dist < bestDist) {
-      bestDist = dist;
-      best = placement;
-    }
+function intersectPositions(a: number[], b: number[]): number[] {
+  const lookup = new Set(a);
+  const shared: number[] = [];
+  for (const pos of b) {
+    if (lookup.has(pos)) shared.push(pos);
   }
-
-  return best;
+  return shared;
 }
 
 /**
- * Validates the mapped piece placements:
- * 1. Drops pieces below MIN_CELL_CONFIDENCE
- * 2. Resolves each mapped cell to an engine PiecePlacement
- * 3. Detects cell conflicts between pieces
- * 4. Calls the engine's validate() to check solvability
- *
- * Returns a ValidationReport and the confirmed Map<pieceId, PiecePlacement>
- * ready to hand to the solver.
+ * Validates an already-assigned partial state.
+ * Placement selection is handled by PieceAssigner.
  */
 export function validatePartialState(
   mappedPlacements: MappedPiecePlacement[],
+  confirmedPlacements: Map<number, PiecePlacement>,
 ): { report: ValidationReport; confirmedPlacements: Map<number, PiecePlacement> } {
   const warnings: string[] = [];
-  const droppedPieces: number[] = [];
-  const confirmed = new Map<number, PiecePlacement>();
+  const mappedById = new Map<number, MappedPiecePlacement>(
+    mappedPlacements.map((m) => [m.classId, m]),
+  );
 
-  // ── 1. Drop low-confidence mappings ──────────────────────────────────────
+  const droppedPieces = mappedPlacements
+    .filter((m) => !confirmedPlacements.has(m.classId))
+    .map((m) => m.classId);
 
-  for (const m of mappedPlacements) {
-    if (m.cellConfidence < MIN_CELL_CONFIDENCE) {
-      droppedPieces.push(m.classId);
-      warnings.push(`Piece ${m.pieceKey}: dropped (cellConfidence=${m.cellConfidence.toFixed(2)} < ${MIN_CELL_CONFIDENCE})`);
-      continue;
+  for (const pieceId of droppedPieces) {
+    const info = mappedById.get(pieceId);
+    if (info) {
+      warnings.push(`Piece ${info.pieceKey}: dropped by global assignment or low confidence candidate set.`);
     }
-
-    const placement = resolveToEnginePlacement(m);
-    if (!placement) {
-      droppedPieces.push(m.classId);
-      warnings.push(`Piece ${m.pieceKey}: no valid engine placement covers cell [${m.candidateCell}]`);
-      continue;
-    }
-
-    confirmed.set(m.classId, placement);
   }
-
-  // ── 2. Detect cell conflicts ──────────────────────────────────────────────
 
   const conflicts: ValidationReport["conflicts"] = [];
-  const cellOwner = new Array<number | null>(BOARD_CELLS).fill(null);
+  const conflictKeys = new Set<string>();
 
-  for (const [pieceId, placement] of confirmed) {
-    const conflicting: number[] = [];
-    for (const pos of placement.positions) {
-      const owner = cellOwner[pos];
-      if (owner !== null) {
-        conflicting.push(pos);
-      }
-    }
+  const entries = [...confirmedPlacements.entries()];
+  for (let i = 0; i < entries.length; i += 1) {
+    for (let j = i + 1; j < entries.length; j += 1) {
+      const [pieceA, placementA] = entries[i];
+      const [pieceB, placementB] = entries[j];
+      const shared = intersectPositions(placementA.positions, placementB.positions);
+      if (shared.length === 0) continue;
 
-    if (conflicting.length > 0) {
-      // Find which piece owns these cells and register conflict
-      const ownerIds = new Set(conflicting.map((pos) => cellOwner[pos]!));
-      for (const ownerId of ownerIds) {
-        conflicts.push({ pieceA: ownerId, pieceB: pieceId, sharedCells: conflicting });
-      }
-
-      // Drop the new piece (the earlier-processed one keeps its cells)
-      droppedPieces.push(pieceId);
-      confirmed.delete(pieceId);
-      warnings.push(
-        `Piece ${pieceId}: dropped due to conflict with piece(s) ${[...ownerIds].join(", ")}`,
-      );
-      continue;
-    }
-
-    // Mark cells as owned
-    for (const pos of placement.positions) {
-      cellOwner[pos] = pieceId;
+      const key = `${pieceA}-${pieceB}`;
+      if (conflictKeys.has(key)) continue;
+      conflictKeys.add(key);
+      conflicts.push({ pieceA, pieceB, sharedCells: shared });
     }
   }
 
-  // ── 3. Engine solvability check ───────────────────────────────────────────
+  // Compute occupied cells summary for validation notes.
+  const occupiedCells = new Set<number>();
+  for (const placement of confirmedPlacements.values()) {
+    for (const pos of placement.positions) {
+      occupiedCells.add(pos);
+    }
+  }
+
+  if (occupiedCells.size === 0) {
+    warnings.push("No piece placements were confirmed for this scan.");
+  }
+
+  // Solver check for downstream hint reliability.
 
   let solvable: boolean | null = null;
-  if (confirmed.size > 0) {
-    const validationResult = validate(confirmed, 2000);
+  if (confirmedPlacements.size > 0) {
+    const validationResult = validate(confirmedPlacements, VALIDATE_TIMEOUT_MS);
     if (!validationResult.placementsValid) {
-      // Engine found internal conflicts (shouldn't happen after our check, but defensive)
       warnings.push("Engine found placement conflicts — state may be inconsistent");
     }
     solvable = validationResult.solvable;
@@ -142,6 +82,6 @@ export function validatePartialState(
 
   return {
     report: { valid, conflicts, droppedPieces, solvable, warnings },
-    confirmedPlacements: confirmed,
+    confirmedPlacements,
   };
 }
