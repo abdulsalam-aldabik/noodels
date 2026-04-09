@@ -1,0 +1,186 @@
+import { SegmentShape } from "./types";
+import type { PieceDefinition } from "./types";
+
+export const BOARD_WIDTH = 14;
+export const BOARD_HEIGHT = 14;
+
+export const MISSING_POSITIONS = [
+  0, 1, 2, 3, 6, 7, 10, 11, 12, 13,
+  14, 15, 16, 17, 20, 21, 24, 25, 26, 27,
+  28, 29, 32, 33, 36, 37, 40, 41,
+  42, 43, 46, 47, 50, 51, 54, 55,
+  58, 59, 62, 63, 66, 67,
+  72, 73, 76, 77, 80, 81,
+  84, 85, 88, 89, 92, 93, 96, 97,
+  98, 99, 102, 103, 106, 107, 110, 111,
+  114, 115, 118, 119, 122, 123,
+  128, 129, 132, 133, 136, 137,
+  140, 141, 144, 145, 148, 149, 152, 153,
+  154, 155, 158, 159, 162, 163, 166, 167,
+  168, 169, 170, 171, 174, 175, 178, 179, 180, 181,
+  182, 183, 184, 185, 188, 189, 192, 193, 194, 195,
+] as const;
+
+// Each entry is [topLeft, topRight, bottomLeft, bottomRight] cell indices around one pin.
+export const POSITIONS_AROUND_PINS = [
+  [4, 5, 18, 19], [8, 9, 22, 23],
+  [30, 31, 44, 45], [34, 35, 48, 49], [38, 39, 52, 53],
+  [56, 57, 70, 71], [60, 61, 74, 75], [64, 65, 78, 79], [68, 69, 82, 83],
+  [86, 87, 100, 101], [90, 91, 104, 105], [94, 95, 108, 109],
+  [112, 113, 126, 127], [116, 117, 130, 131], [120, 121, 134, 135], [124, 125, 138, 139],
+  [142, 143, 156, 157], [146, 147, 160, 161], [150, 151, 164, 165],
+  [172, 173, 186, 187], [176, 177, 190, 191],
+] as const;
+
+export const IQ_NOODLES_PIECES: PieceDefinition[] = [
+  {
+    id: 0,
+    bigGridPositions: [4, 44, 82, 83, 122, 123],
+    shapes: [
+      SegmentShape.CURVE,
+      SegmentShape.CROSS_EW,
+      SegmentShape.CURVE,
+      SegmentShape.CROSS_EW,
+      SegmentShape.CURVE,
+      SegmentShape.CURVE,
+    ],
+  },
+  {
+    id: 1,
+    bigGridPositions: [44, 45, 48, 49, 86, 87],
+    shapes: [
+      SegmentShape.CURVE,
+      SegmentShape.CROSS_NS,
+      SegmentShape.CROSS_EW,
+      SegmentShape.CURVE,
+      SegmentShape.CROSS_NS,
+      SegmentShape.CROSS_EW,
+    ],
+  },
+  {
+    id: 2,
+    bigGridPositions: [9, 49, 90, 130, 168, 169],
+    shapes: [
+      SegmentShape.CURVE,
+      SegmentShape.CROSS_NS,
+      SegmentShape.CROSS_NS,
+      SegmentShape.CROSS_EW,
+      SegmentShape.CURVE,
+      SegmentShape.CROSS_EW,
+    ],
+  },
+  {
+    id: 3,
+    bigGridPositions: [91, 131, 172, 173, 212, 213, 250, 251],
+    shapes: [
+      SegmentShape.CURVE,
+      SegmentShape.CROSS_NS,
+      SegmentShape.CROSS_NS,
+      SegmentShape.CURVE,
+      SegmentShape.CROSS_EW,
+      SegmentShape.CURVE,
+      SegmentShape.CURVE,
+      SegmentShape.CROSS_EW,
+    ],
+  },
+  {
+    id: 4,
+    bigGridPositions: [126, 127, 164, 165, 204, 205, 243, 283],
+    shapes: [
+      SegmentShape.CROSS_EW,
+      SegmentShape.CURVE,
+      SegmentShape.CURVE,
+      SegmentShape.CROSS_EW,
+      SegmentShape.CROSS_EW,
+      SegmentShape.CURVE,
+      SegmentShape.CROSS_EW,
+      SegmentShape.CURVE,
+    ],
+  },
+  {
+    id: 5,
+    bigGridPositions: [160, 161, 200, 201, 242, 282, 320, 321],
+    shapes: [
+      SegmentShape.CURVE,
+      SegmentShape.CURVE,
+      SegmentShape.CURVE,
+      SegmentShape.CROSS_NS,
+      SegmentShape.CROSS_NS,
+      SegmentShape.CROSS_EW,
+      SegmentShape.CURVE,
+      SegmentShape.CROSS_EW,
+    ],
+  },
+  {
+    id: 6,
+    bigGridPositions: [208, 209, 246, 247, 286, 287, 324, 325],
+    shapes: [
+      SegmentShape.CROSS_EW,
+      SegmentShape.CURVE,
+      SegmentShape.CURVE,
+      SegmentShape.CROSS_EW,
+      SegmentShape.CROSS_EW,
+      SegmentShape.CURVE,
+      SegmentShape.CURVE,
+      SegmentShape.CROSS_EW,
+    ],
+  },
+  {
+    id: 7,
+    bigGridPositions: [290, 291, 332, 333, 372, 373, 410, 411],
+    shapes: [
+      SegmentShape.CURVE,
+      SegmentShape.CROSS_NS,
+      SegmentShape.CROSS_NS,
+      SegmentShape.CURVE,
+      SegmentShape.CROSS_EW,
+      SegmentShape.CURVE,
+      SegmentShape.CURVE,
+      SegmentShape.CROSS_EW,
+    ],
+  },
+  {
+    id: 8,
+    bigGridPositions: [328, 329, 364, 365, 368, 369, 406, 407],
+    shapes: [
+      SegmentShape.CURVE,
+      SegmentShape.CURVE,
+      SegmentShape.CURVE,
+      SegmentShape.CROSS_NS,
+      SegmentShape.CROSS_EW,
+      SegmentShape.CURVE,
+      SegmentShape.CROSS_NS,
+      SegmentShape.CROSS_EW,
+    ],
+  },
+  {
+    id: 9,
+    bigGridPositions: [360, 361, 402, 403, 442, 443, 484, 485, 524, 525],
+    shapes: [
+      SegmentShape.CURVE,
+      SegmentShape.CROSS_NS,
+      SegmentShape.CROSS_NS,
+      SegmentShape.CURVE,
+      SegmentShape.CURVE,
+      SegmentShape.CROSS_NS,
+      SegmentShape.CROSS_NS,
+      SegmentShape.CURVE,
+      SegmentShape.CURVE,
+      SegmentShape.CURVE,
+    ],
+  },
+  {
+    id: 10,
+    bigGridPositions: [446, 447, 450, 451, 488, 489, 528, 529],
+    shapes: [
+      SegmentShape.CURVE,
+      SegmentShape.CROSS_NS,
+      SegmentShape.CROSS_EW,
+      SegmentShape.CURVE,
+      SegmentShape.CROSS_NS,
+      SegmentShape.CROSS_EW,
+      SegmentShape.CURVE,
+      SegmentShape.CURVE,
+    ],
+  },
+];
