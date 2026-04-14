@@ -41,11 +41,6 @@ function CameraSync({ coordinator }: { coordinator: BoardCoordinator }) {
   return null;
 }
 
-// Global horizontal correction applied to all pieces (in board-cell units).
-// Accounts for a systematic half-cell offset introduced by the SVG/Three.js
-// coordinate system alignment.
-const GLOBAL_OFFSET_X = -0.5;
-
 export default function BoardScene3D({ coordinator, placedModels }: Readonly<BoardScene3DProps>) {
   return (
     <div className="board-scene-3d">
@@ -72,7 +67,7 @@ export default function BoardScene3D({ coordinator, placedModels }: Readonly<Boa
             const perOrientation = (model.residualOffsetX !== undefined || model.residualOffsetY !== undefined)
               ? { x: model.residualOffsetX ?? 0, y: model.residualOffsetY ?? 0 }
               : (tuning.orientationOffsets?.[model.orientationIndex] ?? { x: 0, y: 0 });
-            const worldOffsetX = (GLOBAL_OFFSET_X + perOrientation.x) * coordinator.cellSize;
+            const worldOffsetX = perOrientation.x * coordinator.cellSize;
             const worldOffsetY = perOrientation.y * coordinator.cellSize;
             const scale = model.residualScale ?? tuning.residualScale ?? 1;
 

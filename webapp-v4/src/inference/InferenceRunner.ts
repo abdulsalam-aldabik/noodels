@@ -1,7 +1,7 @@
 import { InferenceSession, Tensor } from "onnxruntime-web";
 import { MODEL_INPUT_SIZE, INFERENCE_TIMEOUT_MS } from "./inferenceTypes";
-import type { RawDetection, LetterboxParams } from "./inferenceTypes";
-import { decodeDetections } from "./postprocessing";
+import type { LetterboxParams } from "./inferenceTypes";
+import { decodeDetections, type DecodeResult } from "./postprocessing";
 
 // The ONNX model must be placed at public/models/yolo26n-seg.onnx
 const MODEL_URL = "/models/yolo26n-seg.onnx";
@@ -53,7 +53,8 @@ export class InferenceRunner {
 
   /**
    * Loads the ONNX model. Safe to call multiple times — subsequent calls return
-   * the same promise. Prefers WebGL execution provider, falls back to WASM.
+   * the same promise. Uses WASM execution provider to avoid WebGL context
+   * conflicts with Three.js.
    */
   async load(): Promise<void> {
     if (this.session) return;
@@ -63,26 +64,19 @@ export class InferenceRunner {
 
     this.loadPromise = (async () => {
       try {
-        // Try WebGL first (GPU acceleration on mobile), fall back to WASM
+        // Use WASM execution provider. WebGL EP conflicts with Three.js's
+        // WebGL context on mobile (causes "Context Lost" errors), and the
+        // onnxruntime-web build shipped doesn't always include it anyway.
         this.session = await InferenceSession.create(MODEL_URL, {
-          executionProviders: ["webgl", "wasm"],
+          executionProviders: ["wasm"],
           graphOptimizationLevel: "all",
         });
         this.setStatus({ state: "ready" });
       } catch (err) {
-        // WebGL may fail on some browsers — try WASM only
-        try {
-          this.session = await InferenceSession.create(MODEL_URL, {
-            executionProviders: ["wasm"],
-            graphOptimizationLevel: "all",
-          });
-          this.setStatus({ state: "ready" });
-        } catch (err2) {
-          const message = err2 instanceof Error ? err2.message : String(err2);
-          this.setStatus({ state: "error", message });
-          this.loadPromise = null;
-          throw new Error(`Model load failed: ${message}`);
-        }
+        const message = err instanceof Error ? err.message : String(err);
+        this.setStatus({ state: "error", message });
+        this.loadPromise = null;
+        throw new Error(`Model load failed: ${message}`);
       }
     })();
 
@@ -91,20 +85,15 @@ export class InferenceRunner {
 
   /**
    * Runs inference on a preprocessed tensor.
-   *
-   * @param tensor - Float32Array in NCHW [1,3,640,640] layout
-   * @param params - Letterbox parameters from preprocessing
-   * @returns Decoded, NMS-filtered detections in original image space
-   * @throws If model not loaded, or if inference exceeds INFERENCE_TIMEOUT_MS
+   * Returns decoded detections plus postprocess debug info.
    */
-  async run(tensor: Float32Array, params: LetterboxParams): Promise<RawDetection[]> {
+  async run(tensor: Float32Array, params: LetterboxParams): Promise<DecodeResult> {
     if (!this.session) {
       throw new Error("Model not loaded. Call load() before run().");
     }
 
     const inputTensor = new Tensor("float32", tensor, [1, 3, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE]);
 
-    // Race inference against a hard timeout
     const inferencePromise = this.session.run({ images: inputTensor });
     const timeoutPromise = new Promise<never>((_, reject) =>
       setTimeout(() => reject(new Error(`Inference timed out after ${INFERENCE_TIMEOUT_MS}ms`)), INFERENCE_TIMEOUT_MS),
@@ -112,8 +101,6 @@ export class InferenceRunner {
 
     const outputs = await Promise.race([inferencePromise, timeoutPromise]);
 
-    // Retrieve output tensors. The exact output names depend on how the model was exported.
-    // Standard YOLOv8-seg exports use 'output0' and 'output1'.
     const output0 = outputs["output0"] ?? outputs[Object.keys(outputs)[0]];
     const output1 = outputs["output1"] ?? outputs[Object.keys(outputs)[1]];
 

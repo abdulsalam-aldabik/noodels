@@ -50,3 +50,25 @@ export function generatePlacementsForPiece(pieceId: number, board = new NoodlesB
 export function generatePlacementsForAllPieces(board = new NoodlesBoard()): PiecePlacement[][] {
   return IQ_NOODLES_PIECES.map((piece) => generatePlacementsForPiece(piece.id, board));
 }
+
+/**
+ * Collapses equivalent rotations for symmetric pieces.
+ * For a fully rotationally symmetric piece, many orientations produce the
+ * same board footprint — keep only unique footprints.
+ */
+export function collapseCandidatesBySymmetry(
+  placements: PiecePlacement[],
+): PiecePlacement[] {
+  const seen = new Set<string>();
+  const result: PiecePlacement[] = [];
+
+  for (const p of placements) {
+    const key = [...p.positions].sort((a, b) => a - b).join(",");
+    if (!seen.has(key)) {
+      seen.add(key);
+      result.push(p);
+    }
+  }
+
+  return result;
+}
