@@ -7,7 +7,7 @@ import type { InferenceRunner } from "../inference/InferenceRunner";
 import type { CalibratedBoardRef } from "./visionTypes";
 import {
   BOARD_GRID,
-  getBoardCenterCorners,
+  getBoardEdgeCorners,
   expectedRectifiedCellSpacing,
 } from "../board/gridGeometry";
 import { computeHomography } from "./HomographyComputer";
@@ -165,15 +165,17 @@ function buildRectifiedGeometry(marginCells: number): RectifiedGeometry | null {
   const scale = expectedRectifiedCellSpacing(RECTIFIED_SIZE, validatedMargin);
   if (!Number.isFinite(scale) || scale <= 0) return null;
 
-  const boardOriginCol = -validatedMargin;
-  const boardOriginRow = -validatedMargin;
+  // boardOrigin is expressed in center-coordinate space; include the -0.5 edge offset
+  // so margins are measured from board edges, not from first cell centers.
+  const boardOriginCol = BOARD_GRID.edgeMinCol - validatedMargin;
+  const boardOriginRow = BOARD_GRID.edgeMinRow - validatedMargin;
 
-  const boardGridCorners = getBoardCenterCorners() as OrderedCorners;
+  const boardGridCorners = getBoardEdgeCorners() as OrderedCorners;
   const boardPixelCorners: OrderedCorners = [
-    [(BOARD_GRID.minCol - boardOriginCol) * scale, (BOARD_GRID.minRow - boardOriginRow) * scale],
-    [(BOARD_GRID.maxCol - boardOriginCol) * scale, (BOARD_GRID.minRow - boardOriginRow) * scale],
-    [(BOARD_GRID.maxCol - boardOriginCol) * scale, (BOARD_GRID.maxRow - boardOriginRow) * scale],
-    [(BOARD_GRID.minCol - boardOriginCol) * scale, (BOARD_GRID.maxRow - boardOriginRow) * scale],
+    [(BOARD_GRID.edgeMinCol - boardOriginCol) * scale, (BOARD_GRID.edgeMinRow - boardOriginRow) * scale],
+    [(BOARD_GRID.edgeMaxCol - boardOriginCol) * scale, (BOARD_GRID.edgeMinRow - boardOriginRow) * scale],
+    [(BOARD_GRID.edgeMaxCol - boardOriginCol) * scale, (BOARD_GRID.edgeMaxRow - boardOriginRow) * scale],
+    [(BOARD_GRID.edgeMinCol - boardOriginCol) * scale, (BOARD_GRID.edgeMaxRow - boardOriginRow) * scale],
   ];
 
   try {

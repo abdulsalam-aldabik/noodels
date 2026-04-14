@@ -47,8 +47,6 @@ interface SweepRow {
 
 type ImageTab = "raw" | "yolo" | "corners" | "rectified" | "mapped";
 
-const DEFAULT_CELL_SPACING_PX = expectedRectifiedCellSpacing(RECTIFIED_SIZE);
-
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function uid(): string {
@@ -340,6 +338,11 @@ export default function ScanLabPage() {
 
   const isBusy = busyText.length > 0;
 
+  const expectedCellSpacingPx = expectedRectifiedCellSpacing(
+    RECTIFIED_SIZE,
+    artifacts?.rectifiedGeometry.marginCells ?? marginCells,
+  );
+
   const tabUrl: Record<ImageTab, string | null> = {
     raw: artifactUrls?.raw ?? null,
     yolo: artifactUrls?.yolo ?? null,
@@ -547,16 +550,27 @@ export default function ScanLabPage() {
                 <div className="sl-card">
                   <p className="sl-section-title">Geometry</p>
                   <div className="sl-geometry-panel">
-                    <div className={`sl-geometry-item ${Math.abs(debug.cellSpacingPx - DEFAULT_CELL_SPACING_PX) < 1 ? "sl-geometry-item--ok" : "sl-geometry-item--warn"}`}>
+                    <div className={`sl-geometry-item ${Math.abs(debug.cellSpacingPx - expectedCellSpacingPx) < 1 ? "sl-geometry-item--ok" : "sl-geometry-item--warn"}`}>
                       <strong>Cell spacing </strong>
                       <span>{debug.cellSpacingPx.toFixed(3)} px </span>
                       <span style={{ fontSize: "0.75rem", opacity: 0.7 }}>
-                        (want {DEFAULT_CELL_SPACING_PX.toFixed(3)})
+                        (want {expectedCellSpacingPx.toFixed(3)})
+                      </span>
+                    </div>
+                    <div className="sl-geometry-item">
+                      <strong>Board bbox </strong>
+                      <span>
+                        {debug.boardBbox
+                          ? `[${debug.boardBbox.map((v) => v.toFixed(1)).join(", ")}]`
+                          : "n/a"}
                       </span>
                     </div>
                     <div className="sl-geometry-item">
                       <strong>Corner source </strong>
-                      <span>{debug.boardCornerSource ?? "?"}</span>
+                      <span>
+                        {debug.boardCornerSource ?? "?"}
+                        {typeof debug.boardCornerScore === "number" ? ` (score ${debug.boardCornerScore.toFixed(3)})` : ""}
+                      </span>
                     </div>
                     <div className={`sl-geometry-item ${debug.hingeSnapped ? "sl-geometry-item--ok" : ""}`}>
                       <strong>Hinge snapped </strong>
@@ -586,6 +600,16 @@ export default function ScanLabPage() {
                         <strong>Margin candidates </strong>
                         <span>
                           [{artifacts.rectifiedGeometry.candidateMarginsTried.map((m) => m.toFixed(2)).join(", ")}], score={artifacts.rectifiedGeometry.selectionScore?.toFixed(2) ?? "n/a"}
+                        </span>
+                      </div>
+                    )}
+                    {debug.boardCornerCandidates.length > 0 && (
+                      <div className="sl-geometry-item">
+                        <strong>Corner candidates </strong>
+                        <span>
+                          {debug.boardCornerCandidates
+                            .map((c) => `${c.selected ? "*" : ""}${c.source}:${c.score.toFixed(3)}${c.hingeSnapped ? ":hinge" : ""}${c.cornersClipped ? ":clipped" : ""}`)
+                            .join(" | ")}
                         </span>
                       </div>
                     )}
@@ -762,7 +786,7 @@ export default function ScanLabPage() {
                   </div>
                   <p style={{ fontSize: "0.78rem", color: "var(--ink-soft)", marginTop: "0.4rem" }}>
                     Best row highlighted. Score = pieces×1.5 − ambig×0.6 − dropped×1.2.
-                    Cell spacing should stay near {DEFAULT_CELL_SPACING_PX.toFixed(3)} for margin=1.
+                    Cell spacing should stay near {expectedCellSpacingPx.toFixed(3)} for current margin.
                   </p>
                 </div>
               )}

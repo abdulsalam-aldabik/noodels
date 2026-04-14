@@ -18,6 +18,9 @@ export const BOARD_GRID = {
   edgeMaxCol: BOARD_WIDTH - 0.5,
   edgeMinRow: -0.5,
   edgeMaxRow: BOARD_HEIGHT - 0.5,
+  edgeSpanCols: BOARD_WIDTH,
+  edgeSpanRows: BOARD_HEIGHT,
+  maxEdgeSpan: Math.max(BOARD_WIDTH, BOARD_HEIGHT),
   centerSpanCols: BOARD_WIDTH - 1,
   centerSpanRows: BOARD_HEIGHT - 1,
   maxCenterSpan: Math.max(BOARD_WIDTH - 1, BOARD_HEIGHT - 1),
@@ -34,11 +37,20 @@ export function getBoardCenterCorners(): GridCorners {
   ];
 }
 
+export function getBoardEdgeCorners(): GridCorners {
+  return [
+    [BOARD_GRID.edgeMinCol, BOARD_GRID.edgeMinRow],
+    [BOARD_GRID.edgeMaxCol, BOARD_GRID.edgeMinRow],
+    [BOARD_GRID.edgeMaxCol, BOARD_GRID.edgeMaxRow],
+    [BOARD_GRID.edgeMinCol, BOARD_GRID.edgeMaxRow],
+  ];
+}
+
 export function expectedRectifiedCellSpacing(
   rectifiedSize: number,
   marginCells = DEFAULT_RECTIFIED_MARGIN_CELLS,
 ): number {
-  return rectifiedSize / (BOARD_GRID.maxCenterSpan + marginCells * 2);
+  return rectifiedSize / (BOARD_GRID.maxEdgeSpan + marginCells * 2);
 }
 
 export function buildInternalGridFractions(cellCount: number): number[] {

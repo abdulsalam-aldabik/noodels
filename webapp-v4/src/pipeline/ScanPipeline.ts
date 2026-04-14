@@ -235,7 +235,10 @@ function runBoardLocalizationStage(
 function applyBoardDebug(debug: ScanDebug, boardRef: CalibratedBoardRef): void {
   debug.boardDetected = true;
   debug.boardConfidence = boardRef.boardConfidence;
+  debug.boardBbox = boardRef.boardBbox;
   debug.boardCornerSource = boardRef.boardCornerSource;
+  debug.boardCornerScore = boardRef.boardCornerScore;
+  debug.boardCornerCandidates = boardRef.boardCornerCandidates;
   debug.hingeSnapped = boardRef.hingeSnapped;
   debug.cornersClipped = boardRef.cornersClipped;
 }

@@ -181,7 +181,8 @@ export function mapPiecesToGrid(
  * so no homography is needed; we inverse-rotate by the detected board angle,
  * then apply scale + origin.
  *
- * cellSpacing = RECTIFIED_SIZE / totalSpan = 640 / 15 ≈ 42.667 px
+ * cellSpacing = RECTIFIED_SIZE / (boardSpan + 2*margin)
+ * Default margin=1 -> 640 / (14 + 2) = 40 px
  * [rx, ry] = R(-theta) * [cx, cy]
  * col = rx / cellSpacing + boardOriginCol
  * row = ry / cellSpacing + boardOriginRow

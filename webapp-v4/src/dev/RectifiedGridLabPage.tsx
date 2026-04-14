@@ -9,7 +9,7 @@ import type { RectifiedGeometry } from "../vision/RectifiedDetector";
 import { RECTIFIED_MARGIN_RANGE, RECTIFIED_SIZE } from "../vision/RectifiedDetector";
 import { applyHomography, computeHomography } from "../vision/HomographyComputer";
 import { BOARD_WIDTH, POSITIONS_AROUND_PINS } from "../engine/constants";
-import { BOARD_GRID, buildCellEdgeCoordinates } from "../board/gridGeometry";
+import { BOARD_GRID, buildCellEdgeCoordinates, expectedRectifiedCellSpacing } from "../board/gridGeometry";
 import type { RawDetection } from "../inference/inferenceTypes";
 import { generateCandidates, mapRectifiedPiecesToGrid } from "../vision/PieceMapper";
 import { globalAssign } from "../pipeline/PieceAssigner";
@@ -46,6 +46,7 @@ interface ScenarioResult {
   geometryProfile: string;
   cellSpacingPx: number;
   selectedMargin: number;
+  debug: ScanDebug;
   geometry?: RectifiedGeometry;
   rectifiedDetections?: RawDetection[];
   overlayUrls?: OverlayUrls;
@@ -150,23 +151,23 @@ function createGeometryFromTune(
   marginCells: number,
   fallbackGeometry: RectifiedGeometry | null,
 ): RectifiedGeometry | null {
-  const boardCenterCorners: [[number, number], [number, number], [number, number], [number, number]] = [
-    [BOARD_GRID.minCol, BOARD_GRID.minRow],
-    [BOARD_GRID.maxCol, BOARD_GRID.minRow],
-    [BOARD_GRID.maxCol, BOARD_GRID.maxRow],
-    [BOARD_GRID.minCol, BOARD_GRID.maxRow],
+  const boardEdgeCorners: [[number, number], [number, number], [number, number], [number, number]] = [
+    [BOARD_GRID.edgeMinCol, BOARD_GRID.edgeMinRow],
+    [BOARD_GRID.edgeMaxCol, BOARD_GRID.edgeMinRow],
+    [BOARD_GRID.edgeMaxCol, BOARD_GRID.edgeMaxRow],
+    [BOARD_GRID.edgeMinCol, BOARD_GRID.edgeMaxRow],
   ];
 
-  const rectifiedCenterCorners: [[number, number], [number, number], [number, number], [number, number]] = [
-    mapBoardPointToPixel(tune, BOARD_GRID.minCol, BOARD_GRID.minRow),
-    mapBoardPointToPixel(tune, BOARD_GRID.maxCol, BOARD_GRID.minRow),
-    mapBoardPointToPixel(tune, BOARD_GRID.maxCol, BOARD_GRID.maxRow),
-    mapBoardPointToPixel(tune, BOARD_GRID.minCol, BOARD_GRID.maxRow),
+  const rectifiedEdgeCorners: [[number, number], [number, number], [number, number], [number, number]] = [
+    mapBoardPointToPixel(tune, BOARD_GRID.edgeMinCol, BOARD_GRID.edgeMinRow),
+    mapBoardPointToPixel(tune, BOARD_GRID.edgeMaxCol, BOARD_GRID.edgeMinRow),
+    mapBoardPointToPixel(tune, BOARD_GRID.edgeMaxCol, BOARD_GRID.edgeMaxRow),
+    mapBoardPointToPixel(tune, BOARD_GRID.edgeMinCol, BOARD_GRID.edgeMaxRow),
   ];
 
   try {
-    const rectifiedToBoardMatrix = computeHomography(rectifiedCenterCorners, boardCenterCorners);
-    const boardToRectifiedMatrix = computeHomography(boardCenterCorners, rectifiedCenterCorners);
+    const rectifiedToBoardMatrix = computeHomography(rectifiedEdgeCorners, boardEdgeCorners);
+    const boardToRectifiedMatrix = computeHomography(boardEdgeCorners, rectifiedEdgeCorners);
 
     const safeSpacing = Math.max(1e-6, tune.spacingPx);
     const boardOriginCol = BOARD_GRID.minCol - tune.originX / safeSpacing;
@@ -306,6 +307,7 @@ export default function RectifiedGridLabPage() {
   const [latestMetrics, setLatestMetrics] = useState<LabMetrics | null>(null);
   const [latestProfile, setLatestProfile] = useState<string>("");
   const [latestCellSpacing, setLatestCellSpacing] = useState<number>(0);
+  const [latestDebug, setLatestDebug] = useState<ScanDebug | null>(null);
   const [sweepRows, setSweepRows] = useState<SweepRow[]>([]);
 
   const [overlayUrls, setOverlayUrls] = useState<OverlayUrls | null>(null);
@@ -383,6 +385,7 @@ export default function RectifiedGridLabPage() {
         geometryProfile: `selected=${candidateMargin.toFixed(2)}`,
         cellSpacingPx: result.debug.cellSpacingPx,
         selectedMargin: candidateMargin,
+        debug: result.debug,
       };
     }
 
@@ -400,6 +403,7 @@ export default function RectifiedGridLabPage() {
       geometryProfile,
       cellSpacingPx: result._artifacts.rectifiedGeometry.gridToPixelScale,
       selectedMargin: result._artifacts.rectifiedGeometry.marginCells,
+      debug: result.debug,
       geometry: result._artifacts.rectifiedGeometry,
       rectifiedDetections: result._artifacts.rectifiedDetections,
       overlayUrls,
@@ -419,6 +423,7 @@ export default function RectifiedGridLabPage() {
       setLatestMetrics(scenario.metrics);
       setLatestProfile(scenario.geometryProfile || "fallback");
       setLatestCellSpacing(scenario.cellSpacingPx);
+      setLatestDebug(scenario.debug);
       setShrinkCells(scenario.selectedMargin);
       setLatestGeometry(scenario.geometry ?? null);
       setLatestRectifiedDetections(scenario.rectifiedDetections ?? []);
@@ -472,6 +477,7 @@ export default function RectifiedGridLabPage() {
       setLatestMetrics(finalScenario.metrics);
       setLatestProfile(finalScenario.geometryProfile || "fallback");
       setLatestCellSpacing(finalScenario.cellSpacingPx);
+      setLatestDebug(finalScenario.debug);
       setShrinkCells(finalScenario.selectedMargin);
       setLatestGeometry(finalScenario.geometry ?? null);
       setLatestRectifiedDetections(finalScenario.rectifiedDetections ?? []);
@@ -490,6 +496,7 @@ export default function RectifiedGridLabPage() {
     setLatestMetrics(null);
     setLatestProfile("");
     setLatestCellSpacing(0);
+    setLatestDebug(null);
     setLatestGeometry(null);
     setLatestRectifiedDetections([]);
     setGridTune(null);
@@ -546,10 +553,14 @@ export default function RectifiedGridLabPage() {
 
   const inferredMarginFromTune = useMemo(() => {
     if (!gridTune) return null;
-    const raw = (RECTIFIED_SIZE / Math.max(1e-6, gridTune.spacingPx) - BOARD_GRID.maxCenterSpan) / 2;
+    const raw = (RECTIFIED_SIZE / Math.max(1e-6, gridTune.spacingPx) - BOARD_GRID.maxEdgeSpan) / 2;
     if (!Number.isFinite(raw)) return null;
     return raw;
   }, [gridTune]);
+
+  const expectedSpacingForMargin = useMemo(() => {
+    return expectedRectifiedCellSpacing(RECTIFIED_SIZE, shrinkCells);
+  }, [shrinkCells]);
 
   const tunedOverlay = useMemo(() => {
     if (!gridTune) return null;
@@ -765,32 +776,65 @@ export default function RectifiedGridLabPage() {
         {errorText && <p className="lab-error">{errorText}</p>}
 
         {latestMetrics && (
-          <div className="lab-metrics-grid">
-            <div>
-              <strong>Mapped pieces</strong>
-              <span>{latestMetrics.pieceCount}</span>
+          <>
+            <div className="lab-metrics-grid">
+              <div>
+                <strong>Mapped pieces</strong>
+                <span>{latestMetrics.pieceCount}</span>
+              </div>
+              <div>
+                <strong>Avg cell confidence</strong>
+                <span>{latestMetrics.avgCellConfidence.toFixed(3)}</span>
+              </div>
+              <div>
+                <strong>Ambiguous pieces</strong>
+                <span>{latestMetrics.ambiguousCount}</span>
+              </div>
+              <div>
+                <strong>Scenario score</strong>
+                <span>{latestMetrics.score.toFixed(3)}</span>
+              </div>
+              <div>
+                <strong>Cell spacing px</strong>
+                <span>{latestCellSpacing.toFixed(3)}</span>
+              </div>
+              <div>
+                <strong>Expected spacing px</strong>
+                <span>{expectedSpacingForMargin.toFixed(3)}</span>
+              </div>
+              <div>
+                <strong>Spacing delta px</strong>
+                <span>{(latestCellSpacing - expectedSpacingForMargin).toFixed(3)}</span>
+              </div>
+              <div>
+                <strong>Geometry profile</strong>
+                <span>{latestProfile}</span>
+              </div>
+              {latestDebug && (
+                <div>
+                  <strong>Corner source</strong>
+                  <span>
+                    {latestDebug.boardCornerSource ?? "n/a"}
+                    {typeof latestDebug.boardCornerScore === "number" ? ` (${latestDebug.boardCornerScore.toFixed(3)})` : ""}
+                  </span>
+                </div>
+              )}
+              {latestDebug?.boardBbox && (
+                <div>
+                  <strong>Board bbox</strong>
+                  <span>[{latestDebug.boardBbox.map((v) => v.toFixed(1)).join(", ")}]</span>
+                </div>
+              )}
             </div>
-            <div>
-              <strong>Avg cell confidence</strong>
-              <span>{latestMetrics.avgCellConfidence.toFixed(3)}</span>
-            </div>
-            <div>
-              <strong>Ambiguous pieces</strong>
-              <span>{latestMetrics.ambiguousCount}</span>
-            </div>
-            <div>
-              <strong>Scenario score</strong>
-              <span>{latestMetrics.score.toFixed(3)}</span>
-            </div>
-            <div>
-              <strong>Cell spacing px</strong>
-              <span>{latestCellSpacing.toFixed(3)}</span>
-            </div>
-            <div>
-              <strong>Geometry profile</strong>
-              <span>{latestProfile}</span>
-            </div>
-          </div>
+
+            {latestDebug && latestDebug.boardCornerCandidates.length > 0 && (
+              <p className="lab-info" style={{ marginTop: "0.45rem" }}>
+                Corner candidates: {latestDebug.boardCornerCandidates
+                  .map((candidate) => `${candidate.selected ? "*" : ""}${candidate.source}:${candidate.score.toFixed(3)}${candidate.hingeSnapped ? ":hinge" : ""}${candidate.cornersClipped ? ":clipped" : ""}`)
+                  .join(" | ")}
+              </p>
+            )}
+          </>
         )}
 
         {sweepRows.length > 0 && (

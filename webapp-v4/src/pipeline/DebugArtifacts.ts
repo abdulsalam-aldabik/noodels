@@ -50,6 +50,13 @@ function classLabel(classId: number): string {
   return CLASS_LABELS[classId] ?? `class_${classId}`;
 }
 
+function cornerSourceColor(source: string): string {
+  if (source === "mask_diagonal_extremes") return "#5eead4";
+  if (source === "mask_bbox_fused") return "#60a5fa";
+  if (source === "bbox") return "#f59e0b";
+  return "#f8fafc";
+}
+
 /** Creates a new debug snapshot with default values. */
 export function createScanDebug(sourceType: "camera" | "upload"): ScanDebug {
   return {
@@ -70,7 +77,10 @@ export function createScanDebug(sourceType: "camera" | "upload"): ScanDebug {
     postprocess: null,
     boardDetected: false,
     boardConfidence: 0,
+    boardBbox: null,
     boardCornerSource: null,
+    boardCornerScore: null,
+    boardCornerCandidates: [],
     hingeSnapped: false,
     cornersClipped: false,
     cellSpacingPx: 0,
@@ -148,6 +158,45 @@ export function drawCornersOverlay(
   const { canvas, ctx } = makeCanvas(source);
   if (!boardRef) return canvas;
 
+  const fontSize = Math.max(13, Math.round(canvas.height / 62));
+
+  const [bx1, by1, bx2, by2] = boardRef.boardBbox;
+  ctx.save();
+  ctx.strokeStyle = "rgba(128, 245, 222, 0.9)";
+  ctx.lineWidth = 2;
+  ctx.setLineDash([10, 6]);
+  ctx.strokeRect(bx1, by1, bx2 - bx1, by2 - by1);
+  ctx.fillStyle = "rgba(128, 245, 222, 0.95)";
+  ctx.font = `bold ${fontSize}px sans-serif`;
+  ctx.fillText("board bbox", bx1 + 8, Math.max(fontSize + 4, by1 - 8));
+  ctx.restore();
+
+  if (boardRef.boardCornerCandidates.length > 0) {
+    for (const candidate of boardRef.boardCornerCandidates) {
+      const color = cornerSourceColor(candidate.source);
+      const [p0, p1, p2, p3] = candidate.boardCorners;
+
+      ctx.save();
+      ctx.globalAlpha = candidate.selected ? 0.95 : 0.55;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = candidate.selected ? 3 : 2;
+      ctx.setLineDash(candidate.selected ? [] : [7, 5]);
+      ctx.beginPath();
+      ctx.moveTo(p0[0], p0[1]);
+      ctx.lineTo(p1[0], p1[1]);
+      ctx.lineTo(p2[0], p2[1]);
+      ctx.lineTo(p3[0], p3[1]);
+      ctx.closePath();
+      ctx.stroke();
+
+      const label = `${candidate.selected ? "*" : ""}${candidate.source} ${candidate.score.toFixed(2)}`;
+      ctx.fillStyle = color;
+      ctx.font = `bold ${fontSize}px sans-serif`;
+      ctx.fillText(label, p0[0] + 8, p0[1] + fontSize + 2);
+      ctx.restore();
+    }
+  }
+
   if (boardRef.boardPolygon.length > 2) {
     ctx.beginPath();
     ctx.moveTo(boardRef.boardPolygon[0][0], boardRef.boardPolygon[0][1]);
@@ -164,7 +213,6 @@ export function drawCornersOverlay(
 
   const cornerLabels = ["TL", "TR", "BR", "BL"];
   const cornerColors = ["#ff4d4f", "#52c41a", "#1677ff", "#faad14"];
-  const fontSize = Math.max(13, Math.round(canvas.height / 62));
 
   for (let i = 0; i < 4; i++) {
     const [x, y] = boardRef.boardCorners[i];

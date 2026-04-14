@@ -1,4 +1,3 @@
-import { BOARD_WIDTH, BOARD_HEIGHT } from "../engine/constants";
 import {
   CLASS_BOARD,
   CLASS_HINGE,
@@ -7,6 +6,7 @@ import type { RawDetection } from "../inference/inferenceTypes";
 import { computeHomography } from "./HomographyComputer";
 import { computeConvexHull } from "../inference/postprocessing";
 import type { CalibratedBoardRef } from "./visionTypes";
+import { getBoardEdgeCorners } from "../board/gridGeometry";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -36,19 +36,112 @@ export const DEFAULT_LOCATE_CONFIG: BoardLocateConfig = {
 
 const BOARD_CONFIDENCE_THRESHOLD = 0.3;
 const HINGE_CONFIDENCE_THRESHOLD = 0.3;
+const CORNER_SCORE_EPS = 1e-6;
 
-const BOARD_DST_CORNERS: [[number, number], [number, number], [number, number], [number, number]] = [
-  [0, 0],
-  [BOARD_WIDTH - 1, 0],
-  [BOARD_WIDTH - 1, BOARD_HEIGHT - 1],
-  [0, BOARD_HEIGHT - 1],
-];
+const BOARD_DST_CORNERS = getBoardEdgeCorners();
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function normalize(v: [number, number]): [number, number] {
   const len = Math.hypot(v[0], v[1]);
   return len > 1e-9 ? [v[0] / len, v[1] / len] : [0, 0];
+}
+
+function edgeLength(a: [number, number], b: [number, number]): number {
+  return Math.hypot(b[0] - a[0], b[1] - a[1]);
+}
+
+function polygonArea(corners: [[number, number], [number, number], [number, number], [number, number]]): number {
+  let area = 0;
+  for (let i = 0; i < corners.length; i++) {
+    const [x1, y1] = corners[i];
+    const [x2, y2] = corners[(i + 1) % corners.length];
+    area += x1 * y2 - y1 * x2;
+  }
+  return Math.abs(area) * 0.5;
+}
+
+function cornerAngleDeg(
+  prev: [number, number],
+  curr: [number, number],
+  next: [number, number],
+): number {
+  const v1: [number, number] = [prev[0] - curr[0], prev[1] - curr[1]];
+  const v2: [number, number] = [next[0] - curr[0], next[1] - curr[1]];
+  const len1 = Math.hypot(v1[0], v1[1]);
+  const len2 = Math.hypot(v2[0], v2[1]);
+  if (len1 < 1e-9 || len2 < 1e-9) return 0;
+  const dot = (v1[0] * v2[0] + v1[1] * v2[1]) / (len1 * len2);
+  const clamped = Math.max(-1, Math.min(1, dot));
+  return (Math.acos(clamped) * 180) / Math.PI;
+}
+
+function boardCornerQualityScore(
+  corners: [[number, number], [number, number], [number, number], [number, number]],
+): number {
+  const [tl, tr, br, bl] = corners;
+  const top = edgeLength(tl, tr);
+  const right = edgeLength(tr, br);
+  const bottom = edgeLength(br, bl);
+  const left = edgeLength(bl, tl);
+
+  const meanSide = (top + right + bottom + left) / 4;
+  if (!Number.isFinite(meanSide) || meanSide < 1e-6) return -Infinity;
+
+  const sideError =
+    (Math.abs(top - bottom) + Math.abs(left - right)) /
+    (2 * meanSide);
+
+  const angleTl = cornerAngleDeg(bl, tl, tr);
+  const angleTr = cornerAngleDeg(tl, tr, br);
+  const angleBr = cornerAngleDeg(tr, br, bl);
+  const angleBl = cornerAngleDeg(br, bl, tl);
+  const angleError =
+    (Math.abs(angleTl - 90) + Math.abs(angleTr - 90) + Math.abs(angleBr - 90) + Math.abs(angleBl - 90)) /
+    (4 * 90);
+
+  const area = polygonArea(corners);
+  const normalizedArea = area / (meanSide * meanSide);
+
+  // Higher is better: larger stable quad, lower opposite-edge mismatch, lower angle skew.
+  return normalizedArea - sideError * 1.8 - angleError * 1.5;
+}
+
+function tieBreakSource(source: string): number {
+  if (source === "mask_diagonal_extremes") return 3;
+  if (source === "mask_bbox_fused") return 2;
+  if (source === "bbox") return 1;
+  return 0;
+}
+
+type OrderedCorners = [[number, number], [number, number], [number, number], [number, number]];
+
+interface CornerCandidate {
+  source: string;
+  rawCorners: OrderedCorners;
+}
+
+interface EvaluatedCandidate {
+  source: string;
+  rawCorners: OrderedCorners;
+  boardCorners: OrderedCorners;
+  score: number;
+  hingeSnapped: boolean;
+  cornersClipped: boolean;
+}
+
+function dedupeCandidates(candidates: CornerCandidate[]): CornerCandidate[] {
+  const seen = new Set<string>();
+  const out: CornerCandidate[] = [];
+  for (const candidate of candidates) {
+    const key = candidate.rawCorners
+      .map(([x, y]) => `${x.toFixed(2)}:${y.toFixed(2)}`)
+      .join("|");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(candidate);
+  }
+  return out;
 }
 
 /**
@@ -197,67 +290,105 @@ export function locateBoard(
     ? computeConvexHull(boardDet.maskPolygon)
     : boardDet.maskPolygon;
 
-  // 3. Extract 4 raw corners.
-  let rawCorners: [number, number][];
-  let source: string;
+  const [bx1, by1, bx2, by2] = boardDet.bbox;
+  const bboxCorners: OrderedCorners = [[bx1, by1], [bx2, by1], [bx2, by2], [bx1, by2]];
 
+  const rawCandidates: CornerCandidate[] = [{ source: "bbox", rawCorners: bboxCorners }];
   if (hull.length >= 4) {
-    const corners = cornersFromHullDiagonalExtremes(hull);
-    if (corners) {
-      rawCorners = corners;
-      source = "mask_diagonal_extremes";
-    } else {
-      const [x1, y1, x2, y2] = boardDet.bbox;
-      rawCorners = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]];
-      source = "bbox";
+    const maskCorners = cornersFromHullDiagonalExtremes(hull);
+    if (maskCorners) {
+      rawCandidates.push({ source: "mask_diagonal_extremes", rawCorners: maskCorners });
+
+      // Fuse mask and bbox for robustness when mask has one weak corner.
+      const fused: OrderedCorners = [
+        [(maskCorners[0][0] + bboxCorners[0][0]) / 2, (maskCorners[0][1] + bboxCorners[0][1]) / 2],
+        [(maskCorners[1][0] + bboxCorners[1][0]) / 2, (maskCorners[1][1] + bboxCorners[1][1]) / 2],
+        [(maskCorners[2][0] + bboxCorners[2][0]) / 2, (maskCorners[2][1] + bboxCorners[2][1]) / 2],
+        [(maskCorners[3][0] + bboxCorners[3][0]) / 2, (maskCorners[3][1] + bboxCorners[3][1]) / 2],
+      ];
+      rawCandidates.push({ source: "mask_bbox_fused", rawCorners: fused });
     }
-  } else {
-    const [x1, y1, x2, y2] = boardDet.bbox;
-    rawCorners = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]];
-    source = "bbox";
   }
 
-  // 4. Order corners for hinge-at-top.
-  const ordered = orderCornersHingeTop(rawCorners);
-  let TL = ordered[0];
-  let TR = ordered[1];
-  const BR = ordered[2];
-  const BL = ordered[3];
+  const candidates = dedupeCandidates(rawCandidates);
+  if (candidates.length === 0) return null;
 
   // 5. Optionally snap top edge using detected hinge bbox.
-  let hingeSnapped = false;
   const hingeDet = detections
     .filter((d) => d.classId === CLASS_HINGE)
     .sort((a, b) => b.confidence - a.confidence)[0];
 
-  if (hingeDet && hingeDet.confidence >= HINGE_CONFIDENCE_THRESHOLD) {
-    const hingeBottom = hingeDet.bbox[3];
-    TL = [TL[0], hingeBottom];
-    TR = [TR[0], hingeBottom];
-    hingeSnapped = true;
+  const evaluated: EvaluatedCandidate[] = [];
+
+  for (const candidate of candidates) {
+    const ordered = orderCornersHingeTop(candidate.rawCorners);
+    let TL = ordered[0];
+    let TR = ordered[1];
+    const BR = ordered[2];
+    const BL = ordered[3];
+
+    let hingeSnapped = false;
+    if (hingeDet && hingeDet.confidence >= HINGE_CONFIDENCE_THRESHOLD) {
+      const hingeBottom = hingeDet.bbox[3];
+      TL = [TL[0], hingeBottom];
+      TR = [TR[0], hingeBottom];
+      hingeSnapped = true;
+    }
+
+    const baseCorners: OrderedCorners = [TL, TR, BR, BL];
+    const insetCorners = insetCornersForPlayableArea(baseCorners, config);
+    const { corners: boardCorners, cornersClipped } = clampOrderedCorners(insetCorners, imageW, imageH);
+
+    const score = boardCornerQualityScore(boardCorners)
+      + (hingeSnapped ? 0.05 : 0)
+      + (cornersClipped ? -0.2 : 0)
+      + (candidate.source === "mask_diagonal_extremes" ? 0.03 : 0);
+
+    evaluated.push({
+      source: candidate.source,
+      rawCorners: baseCorners,
+      boardCorners,
+      score,
+      hingeSnapped,
+      cornersClipped,
+    });
   }
 
-  // 6. Apply single inset to get playable grid corners.
-  const baseCorners: [[number, number], [number, number], [number, number], [number, number]] =
-    [TL, TR, BR, BL];
-  const insetCorners = insetCornersForPlayableArea(baseCorners, config);
-  const { corners: boardCorners, cornersClipped } = clampOrderedCorners(insetCorners, imageW, imageH);
+  evaluated.sort((a, b) => {
+    if (Math.abs(b.score - a.score) > CORNER_SCORE_EPS) return b.score - a.score;
+    return tieBreakSource(b.source) - tieBreakSource(a.source);
+  });
 
-  // 7. Compute homography: image pixels → board grid [0..13]×[0..13].
+  const selected = evaluated[0];
+  if (!selected) return null;
+
+  // 7. Compute homography: image pixels -> board-space where playable edges are
+  // [-0.5..13.5] and cell centers are integers [0..13].
   let H: number[][];
   try {
-    H = computeHomography(boardCorners, BOARD_DST_CORNERS);
+    H = computeHomography(selected.boardCorners, BOARD_DST_CORNERS);
   } catch {
     return null;
   }
 
   return {
     boardPolygon: hull,
-    boardCorners,
+    boardCorners: selected.boardCorners,
     homographyMatrix: H,
     boardConfidence: boardDet.confidence,
-    boardCornerSource: source,
-    hingeSnapped,
-    cornersClipped,
+    boardBbox: boardDet.bbox,
+    boardCornerSource: selected.source,
+    boardCornerScore: selected.score,
+    boardCornerCandidates: evaluated.map((candidate) => ({
+      source: candidate.source,
+      score: candidate.score,
+      selected: candidate.source === selected.source,
+      hingeSnapped: candidate.hingeSnapped,
+      cornersClipped: candidate.cornersClipped,
+      rawCorners: candidate.rawCorners,
+      boardCorners: candidate.boardCorners,
+    })),
+    hingeSnapped: selected.hingeSnapped,
+    cornersClipped: selected.cornersClipped,
   };
 }

@@ -22,7 +22,7 @@ export interface ScanPipelineConfig {
   };
   /**
    * Cells of margin around the 14×14 grid in the 640×640 rectified image.
-   * Default 1.0 → cellSpacingPx = 640/15 = 42.667.
+    * Default 1.0 → cellSpacingPx = 640/16 = 40.
    */
   marginCells: number;
   /** If true, the ScanResult will include intermediate canvases + detections for debug rendering. */
@@ -52,6 +52,26 @@ export interface ScanArtifacts {
 
 // ── Board reference ────────────────────────────────────────────────────────────
 
+export interface BoardCornerCandidateDebug {
+  source: string;
+  score: number;
+  selected: boolean;
+  hingeSnapped: boolean;
+  cornersClipped: boolean;
+  rawCorners: [
+    [number, number],
+    [number, number],
+    [number, number],
+    [number, number],
+  ];
+  boardCorners: [
+    [number, number],
+    [number, number],
+    [number, number],
+    [number, number],
+  ];
+}
+
 /**
  * The board reference frame, established by detecting the board mask (class 11)
  * and optionally the hinge (class 12), then computing the homography H that maps
@@ -67,8 +87,11 @@ export interface CalibratedBoardRef {
   ];
   homographyMatrix: number[][];
   boardConfidence: number;
+  boardBbox: [number, number, number, number];
   /** Source that produced the board corners (e.g. "mask_diagonal_extremes", "bbox"). */
   boardCornerSource: string;
+  boardCornerScore: number;
+  boardCornerCandidates: BoardCornerCandidateDebug[];
   /** True if TL/TR corners were snapped to the bottom of the detected hinge bbox. */
   hingeSnapped: boolean;
   /** True if any corner was clamped to image bounds (was out of frame). */
@@ -151,10 +174,13 @@ export interface ScanDebug {
   postprocess: PostprocessDebug | null;
   boardDetected: boolean;
   boardConfidence: number;
+  boardBbox: [number, number, number, number] | null;
   boardCornerSource: string | null;
+  boardCornerScore: number | null;
+  boardCornerCandidates: BoardCornerCandidateDebug[];
   hingeSnapped: boolean;
   cornersClipped: boolean;
-  /** Cell spacing in pixels used for direct rectified-space mapping (should be ~42.667). */
+  /** Cell spacing in pixels used for direct rectified-space mapping (default margin=1 -> 40). */
   cellSpacingPx: number;
   allDetections: Array<{
     classId: number;
