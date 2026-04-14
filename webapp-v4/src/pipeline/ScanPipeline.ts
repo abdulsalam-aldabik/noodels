@@ -45,12 +45,12 @@ import type {
   ValidationReport,
 } from "../vision/visionTypes";
 
-// ── Config ────────────────────────────────────────────────────────────────────
+// -- Config ------------------------------------------------------------------
 
 export { DEFAULT_SCAN_CONFIG } from "../vision/visionTypes";
 export type { ScanPipelineConfig } from "../vision/visionTypes";
 
-// ── Local types ───────────────────────────────────────────────────────────────
+// -- Local types -------------------------------------------------------------
 
 type PipelineFailure = Extract<ScanResult, { ok: false }>;
 type StageResult<T> = { ok: true; value: T } | { ok: false; failure: PipelineFailure };
@@ -87,7 +87,7 @@ interface HintStageOutput {
   solverResult: ReturnType<typeof formatHint>["solverResult"];
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// -- Generic helpers ---------------------------------------------------------
 
 function now(): number {
   return performance.now();
@@ -305,7 +305,7 @@ function runMappingStage(
   return { mappedPlacements, candidatesByPiece };
 }
 
-/** Picks the placement covering targetPos whose centroid is nearest to detectedBoardCentroid. */
+// Picks the placement covering targetPos whose centroid is nearest to detectedBoardCentroid.
 function nearestCentroidPlacement(
   classId: number,
   targetPos: number,
@@ -344,7 +344,7 @@ function nearestCentroidPlacement(
   return best;
 }
 
-/**
+/*
  * Resolves a (classId, cell) candidate to a concrete engine PiecePlacement.
  *
  * Primary: cell-coverage IoU matching against the projected mask polygon.
@@ -510,7 +510,7 @@ function buildSuccessArtifacts(
   };
 }
 
-// ── Main pipeline ─────────────────────────────────────────────────────────────
+// -- Main pipeline -----------------------------------------------------------
 
 /**
  * Runs the IQ Noodles scan pipeline on a single image.
@@ -548,7 +548,6 @@ export async function runScanPipeline(
   applyBoardDebug(debug, boardRef);
 
   const rectified = await runRectifiedStage(imageSource, boardRef, runner, config, debug);
-
   const mapping = runMappingStage(detections, boardRef, rectified, debug);
 
   const tAssign = now();
@@ -608,363 +607,4 @@ export async function runScanPipeline(
   );
 
   return result;
-}
-import { InferenceRunner } from "../inference/InferenceRunner";
-import { preprocessImage, loadImageFromFile } from "../inference/preprocessing";
-import { locateBoard } from "../vision/BoardLocator";
-import {
-  mapPiecesToGrid,
-  mapRectifiedPiecesToGrid,
-  mergeMappedPlacements,
-  generateCandidates,
-} from "../vision/PieceMapper";
-import {
-  runRectifiedPass,
-  isValidRectifiedMargin,
-  RECTIFIED_MARGIN_RANGE,
-  type RectifiedGeometry,
-} from "../vision/RectifiedDetector";
-import {
-  rasterizeMaskToBoardCells,
-  findBestPlacementByCoverage,
-  MIN_COVERAGE_IOU,
-} from "../vision/CellCoverage";
-import { globalAssign } from "./PieceAssigner";
-import { validatePartialState } from "./PartialStateValidator";
-import { formatHint } from "./HintFormatter";
-import {
-  createScanDebug,
-  summarizeDetections,
-  persistDebugArtifacts,
-} from "./DebugArtifacts";
-import type { DebugArtifactInputs } from "./DebugArtifacts";
-import {
-  generatePlacementsForPiece,
-  collapseCandidatesBySymmetry,
-} from "../engine/placements";
-import { BOARD_WIDTH } from "../engine/constants";
-import type { RawDetection } from "../inference/inferenceTypes";
-import type { PiecePlacement } from "../engine/types";
-import { DEFAULT_SCAN_CONFIG } from "../vision/visionTypes";
-import type {
-  CalibratedBoardRef,
-  MappedPiecePlacement,
-  PieceCandidate,
-  ScanResult,
-  ScanDebug,
-  ScanPipelineConfig,
-} from "../vision/visionTypes";
-
-// ── Config ────────────────────────────────────────────────────────────────────
-
-export { DEFAULT_SCAN_CONFIG } from "../vision/visionTypes";
-export type { ScanPipelineConfig } from "../vision/visionTypes";
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function now(): number {
-  return performance.now();
-}
-
-/** Picks the placement covering targetPos whose centroid is nearest to detectedBoardCentroid. */
-function nearestCentroidPlacement(
-  classId: number,
-  targetPos: number,
-  detectedBoardCentroid: [number, number] | undefined,
-): PiecePlacement | null {
-  const all = generatePlacementsForPiece(classId).filter((p) => p.positions.includes(targetPos));
-  if (all.length === 0) return null;
-
-  const collapsed = collapseCandidatesBySymmetry(all);
-  if (!detectedBoardCentroid) return collapsed[0];
-
-  const [detectedCol, detectedRow] = detectedBoardCentroid;
-  let best = collapsed[0];
-  let bestDist = Infinity;
-  for (const p of collapsed) {
-    let sumR = 0, sumC = 0;
-    for (const pos of p.positions) {
-      sumR += Math.floor(pos / BOARD_WIDTH);
-      sumC += pos % BOARD_WIDTH;
-    }
-    const d = (sumR / p.positions.length - detectedRow) ** 2
-            + (sumC / p.positions.length - detectedCol) ** 2;
-    if (d < bestDist) { bestDist = d; best = p; }
-  }
-  return best;
-}
-
-/**
- * Resolves a (classId, cell) candidate to a concrete engine PiecePlacement.
- *
- * Primary: cell-coverage IoU matching against the projected mask polygon.
- * Fallback: centroid-nearest placement within the candidate cell.
- */
-function resolveCandidateToPlacement(
-  classId: number,
-  cell: [number, number],
-  mapped: MappedPiecePlacement | undefined,
-): { placement: PiecePlacement; coveredCells: Set<number> } | null {
-  const [r, c] = cell;
-  const targetPos = r * BOARD_WIDTH + c;
-
-  if (mapped && mapped.boardMaskPoints.length >= 3) {
-    const coveredCells = rasterizeMaskToBoardCells(mapped.boardMaskPoints);
-    if (coveredCells.size > 0) {
-      const result = findBestPlacementByCoverage(classId, coveredCells, targetPos, mapped.boardMaskPoints);
-      if (result && result.score >= MIN_COVERAGE_IOU) {
-        return { placement: result.placement, coveredCells };
-      }
-    }
-  }
-
-  const placement = nearestCentroidPlacement(classId, targetPos, mapped?.boardCentroid);
-  if (!placement) return null;
-  return { placement, coveredCells: new Set() };
-}
-
-// ── Main pipeline ─────────────────────────────────────────────────────────────
-
-/**
- * Runs the IQ Noodles scan pipeline on a single image.
- *
- * Stages:
- *   1. Preprocess image → 640×640 letterboxed tensor
- *   2. ONNX inference (full image) → all detections
- *   3. Board localization → 4 corners → homography H (image px → board grid)
- *   4. Rectify → warp image to canonical 640×640 board space via H-inverse
- *   5. ONNX inference on rectified image → piece detections in board-aligned space
- *   6. Direct mapping: rectified centroid → board-space (shared grid geometry)
- *   7. Global assignment → resolve to placements → validate → hint
- */
-export async function runScanPipeline(
-  source: File | HTMLImageElement | HTMLCanvasElement | ImageBitmap,
-  sourceType: "camera" | "upload" = "upload",
-  config: ScanPipelineConfig = DEFAULT_SCAN_CONFIG,
-): Promise<ScanResult> {
-  const debug: ScanDebug = createScanDebug(sourceType);
-  const t0 = now();
-  const runner = InferenceRunner.getInstance();
-
-  if (!isValidRectifiedMargin(config.marginCells)) {
-    debug.error = `Invalid rectified marginCells=${config.marginCells}. Expected ${RECTIFIED_MARGIN_RANGE.min}..${RECTIFIED_MARGIN_RANGE.max}.`;
-    debug.errorStage = "config";
-    debug.timings.total = now() - t0;
-    return {
-      ok: false,
-      error: `Invalid rectified margin. Use a value between ${RECTIFIED_MARGIN_RANGE.min} and ${RECTIFIED_MARGIN_RANGE.max}.`,
-      stage: "config",
-      debug,
-    };
-  }
-
-  if (!runner.isReady) {
-    debug.error = "Model not loaded";
-    debug.errorStage = "init";
-    return { ok: false, error: "Model not loaded. Please wait.", stage: "init", debug };
-  }
-
-  // ── Stage 1: Preprocess ─────────────────────────────────────────────────────
-  let imageSource: HTMLImageElement | HTMLCanvasElement | ImageBitmap;
-  let preprocessed: Awaited<ReturnType<typeof preprocessImage>>;
-  try {
-    const tPre = now();
-    imageSource = source instanceof File ? await loadImageFromFile(source) : source;
-    preprocessed = await preprocessImage(imageSource);
-    debug.timings.preprocess = now() - tPre;
-  } catch (err) {
-    debug.error = String(err);
-    debug.errorStage = "preprocess";
-    debug.timings.total = now() - t0;
-    return { ok: false, error: `Preprocessing failed: ${String(err)}`, stage: "preprocess", debug };
-  }
-
-  // ── Stage 2: ONNX Inference (full image) ────────────────────────────────────
-  let detections: RawDetection[];
-  try {
-    const tInf = now();
-    const result = await runner.run(preprocessed.tensor, preprocessed.params);
-    detections = result.detections;
-    debug.postprocess = result.debug;
-    debug.timings.inference = now() - tInf;
-    debug.allDetections = summarizeDetections(detections);
-  } catch (err) {
-    debug.error = String(err);
-    debug.errorStage = "inference";
-    debug.timings.total = now() - t0;
-    return { ok: false, error: `Inference failed: ${String(err)}`, stage: "inference", debug };
-  }
-
-  // ── Stage 3: Board Localization ─────────────────────────────────────────────
-  const imageW = imageSource instanceof HTMLImageElement
-    ? imageSource.naturalWidth : imageSource.width;
-  const imageH = imageSource instanceof HTMLImageElement
-    ? imageSource.naturalHeight : imageSource.height;
-
-  const tBoard = now();
-  const boardRef: CalibratedBoardRef | null = locateBoard(
-    detections, imageW, imageH, config.boardInset,
-  );
-  debug.timings.boardLocate = now() - tBoard;
-
-  if (!boardRef) {
-    debug.error = "Board not detected";
-    debug.errorStage = "board_localization";
-    debug.timings.total = now() - t0;
-    const earlyInputs: DebugArtifactInputs = {
-      debug, source: imageSource ?? null, detections,
-      boardRef: null, rectifiedCanvas: null,
-      rectifiedDetections: [], rectifiedGeometry: null,
-      coveredCellsByClass: new Map(),
-    };
-    persistDebugArtifacts(earlyInputs).catch(() => {});
-    return {
-      ok: false,
-      error: "Board not detected. Ensure the full board is visible and well-lit.",
-      stage: "board_localization",
-      debug,
-    };
-  }
-
-  debug.boardDetected = true;
-  debug.boardConfidence = boardRef.boardConfidence;
-  debug.boardCornerSource = boardRef.boardCornerSource;
-  debug.hingeSnapped = boardRef.hingeSnapped;
-  debug.cornersClipped = boardRef.cornersClipped;
-
-  // ── Stage 4+5: Rectify + Rectified Inference ────────────────────────────────
-  let rectifiedCanvas: OffscreenCanvas | null = null;
-  let rectifiedDetections: RawDetection[] = [];
-  let rectifiedGeometry: RectifiedGeometry | null = null;
-
-  const tRectify = now();
-  try {
-    const rectResult = await runRectifiedPass(
-      imageSource,
-      boardRef,
-      runner,
-      config.marginCells,
-    );
-    if (rectResult) {
-      rectifiedCanvas = rectResult.rectifiedCanvas;
-      rectifiedDetections = rectResult.detections;
-      rectifiedGeometry = rectResult.geometry;
-      debug.timings.rectify = rectResult.timings.warpMs;
-      debug.timings.rectifiedInference = rectResult.timings.inferenceMs;
-    } else {
-      debug.timings.rectify = now() - tRectify;
-      debug.timings.rectifiedInference = 0;
-    }
-  } catch {
-    debug.timings.rectify = now() - tRectify;
-    debug.timings.rectifiedInference = 0;
-  }
-  debug.rectifiedDetectionsCount = rectifiedDetections.length;
-
-  if (rectifiedGeometry) {
-    debug.cellSpacingPx = rectifiedGeometry.gridToPixelScale;
-  } else {
-    debug.warnings.push("Rectified pass unavailable — using primary-pass mapping only.");
-  }
-
-  // ── Stage 6: Direct mapping (rectified-only) ─────────────────────────────────
-  const tMap = now();
-  const primaryMappedPlacements: MappedPiecePlacement[] = mapPiecesToGrid(
-    detections,
-    boardRef.homographyMatrix,
-  );
-  const rectifiedMappedPlacements: MappedPiecePlacement[] = rectifiedGeometry
-    ? mapRectifiedPiecesToGrid(rectifiedDetections, rectifiedGeometry)
-    : [];
-  const mappedPlacements: MappedPiecePlacement[] = mergeMappedPlacements(
-    primaryMappedPlacements,
-    rectifiedMappedPlacements,
-  );
-
-  const candidatesByPiece = generateCandidates(mappedPlacements, 3);
-  debug.timings.directMap = now() - tMap;
-
-  // ── Stage 7: Assignment + validation + hint ─────────────────────────────────
-  const tAssign = now();
-  const assignment: Map<number, PieceCandidate> = globalAssign(candidatesByPiece);
-  debug.timings.assignment = now() - tAssign;
-
-  const mappedByClass = new Map<number, MappedPiecePlacement>();
-  for (const m of mappedPlacements) mappedByClass.set(m.classId, m);
-
-  const resolvedPlacements = new Map<number, PiecePlacement>();
-  const coveredCellsByClass = new Map<number, Set<number>>();
-
-  for (const [classId, cand] of assignment) {
-    const result = resolveCandidateToPlacement(classId, cand.cell, mappedByClass.get(classId));
-    if (result) {
-      resolvedPlacements.set(classId, result.placement);
-      if (result.coveredCells.size > 0) coveredCellsByClass.set(classId, result.coveredCells);
-    }
-  }
-
-  const tVal = now();
-  const { report, confirmedPlacements } = validatePartialState(resolvedPlacements, mappedPlacements);
-  debug.timings.validate = now() - tVal;
-
-  debug.pieceMappings = mappedPlacements.map((m) => ({
-    classId: m.classId,
-    pieceKey: m.pieceKey,
-    confidence: m.detectionConfidence,
-    cellConfidence: m.cellConfidence,
-    candidateCell: m.candidateCell,
-    boardCentroid: m.boardCentroid,
-    ambiguous: m.ambiguous,
-    dropped: !confirmedPlacements.has(m.classId),
-    centroidRectifiedPx: m.centroidRectifiedPx,
-  }));
-  debug.confirmedPlacements = [...confirmedPlacements.entries()].map(([classId, p]) => ({
-    classId,
-    pieceKey: mappedByClass.get(classId)?.pieceKey ?? `piece_${classId}`,
-    orientationIndex: p.orientationIndex,
-    positions: p.positions,
-  }));
-  debug.droppedPieces = report.droppedPieces;
-  debug.warnings = [...debug.warnings, ...report.warnings];
-
-  const tHint = now();
-  const { hint, solverResult } = await new Promise<ReturnType<typeof formatHint>>((resolve) => {
-    setTimeout(() => resolve(formatHint(confirmedPlacements)), 0);
-  });
-  debug.timings.hint = now() - tHint;
-  debug.timings.total = now() - t0;
-
-  // Persist debug artifacts (non-blocking)
-  const artifactInputs: DebugArtifactInputs = {
-    debug, source: imageSource, detections, boardRef,
-    rectifiedCanvas, rectifiedDetections, rectifiedGeometry, coveredCellsByClass,
-  };
-  persistDebugArtifacts(artifactInputs).catch((err) =>
-    console.warn("Debug artifact persistence failed:", err),
-  );
-
-  const scanResult: Extract<ScanResult, { ok: true }> = {
-    ok: true,
-    boardRef,
-    mappedPlacements,
-    report,
-    confirmedPlacements,
-    hint,
-    solverResult,
-    debug,
-  };
-
-  // Attach intermediate artifacts for the debug lab page if requested
-  if (config.returnArtifacts && rectifiedCanvas && rectifiedGeometry) {
-    scanResult._artifacts = {
-      imageSource,
-      fullDetections: detections,
-      rectifiedCanvas,
-      rectifiedDetections,
-      rectifiedGeometry,
-      coveredCellsByClass,
-    };
-  }
-
-  return scanResult;
 }
