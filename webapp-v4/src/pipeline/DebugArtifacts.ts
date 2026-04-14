@@ -306,10 +306,10 @@ export function drawRectifiedYoloOverlay(
 ): OffscreenCanvas {
   const overlay = drawYoloOverlay(rectifiedCanvas, detections);
   const ctx = overlay.getContext("2d");
-  if (!ctx) return overlay;
-
-  drawCoveredCells(ctx, geometry, coveredCellsByClass);
-  drawRectifiedGrid(ctx, geometry);
+  if (ctx) {
+    drawCoveredCells(ctx, geometry, coveredCellsByClass);
+    drawRectifiedGrid(ctx, geometry);
+  }
 
   return overlay;
 }
