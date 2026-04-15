@@ -30,7 +30,7 @@ export interface ScanPipelineConfig {
 }
 
 export const DEFAULT_SCAN_CONFIG: ScanPipelineConfig = {
-  boardInset: { topRatio: 0.1, sideRatio: 0.03, bottomRatio: 0.03 },
+  boardInset: { topRatio: 0.062, sideRatio: 0.03, bottomRatio: 0.03 },
   marginCells: 1,
 };
 
@@ -55,6 +55,7 @@ export interface ScanArtifacts {
 export interface BoardCornerCandidateDebug {
   source: string;
   score: number;
+  qualityScore?: number;
   selected: boolean;
   hingeSnapped: boolean;
   cornersClipped: boolean;
@@ -182,6 +183,8 @@ export interface ScanDebug {
   cornersClipped: boolean;
   /** Cell spacing in pixels used for direct rectified-space mapping (default margin=1 -> 40). */
   cellSpacingPx: number;
+  /** Number of board pins detected in the rectified image (out of 21 possible). */
+  pinDetectionCount: number;
   allDetections: Array<{
     classId: number;
     label: string;

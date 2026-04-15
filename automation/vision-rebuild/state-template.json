@@ -1,0 +1,18 @@
+{
+  "phase": "phase-1",
+  "status": "not-started",
+  "lastUpdated": "YYYY-MM-DDTHH:MM:SSZ",
+  "currentObjective": "",
+  "completed": [],
+  "openRisks": [],
+  "nextActions": [],
+  "validation": {
+    "build": "unknown",
+    "tests": "unknown",
+    "manualChecks": []
+  },
+  "handoff": {
+    "readyForCopilot": false,
+    "filesPrepared": []
+  }
+}

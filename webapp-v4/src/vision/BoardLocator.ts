@@ -27,7 +27,7 @@ export interface BoardLocateConfig {
 }
 
 export const DEFAULT_LOCATE_CONFIG: BoardLocateConfig = {
-  topRatio: 0.1,
+  topRatio: 0.062,
   sideRatio: 0.03,
   bottomRatio: 0.03,
 };
@@ -126,6 +126,7 @@ interface EvaluatedCandidate {
   rawCorners: OrderedCorners;
   boardCorners: OrderedCorners;
   score: number;
+  qualityScore: number;
   hingeSnapped: boolean;
   cornersClipped: boolean;
 }
@@ -339,16 +340,26 @@ export function locateBoard(
     const insetCorners = insetCornersForPlayableArea(baseCorners, config);
     const { corners: boardCorners, cornersClipped } = clampOrderedCorners(insetCorners, imageW, imageH);
 
-    const score = boardCornerQualityScore(boardCorners)
-      + (hingeSnapped ? 0.05 : 0)
-      + (cornersClipped ? -0.2 : 0)
-      + (candidate.source === "mask_diagonal_extremes" ? 0.03 : 0);
+    // Source-priority scoring: mask_diagonal_extremes > mask_bbox_fused > bbox.
+    // The old boardCornerQualityScore penalised non-90° angles, causing the
+    // axis-aligned bbox to always win for tilted boards. We keep the quality
+    // score only for debug traceability and never use it for selection.
+    const SOURCE_PRIORITY: Record<string, number> = {
+      mask_diagonal_extremes: 3,
+      mask_bbox_fused: 2,
+      bbox: 1,
+    };
+    const qualityScore = boardCornerQualityScore(boardCorners);
+    const score = (SOURCE_PRIORITY[candidate.source] ?? 0) * 5
+      + (hingeSnapped ? 0.5 : 0)
+      + (cornersClipped ? -2 : 0);
 
     evaluated.push({
       source: candidate.source,
       rawCorners: baseCorners,
       boardCorners,
       score,
+      qualityScore,
       hingeSnapped,
       cornersClipped,
     });
@@ -382,6 +393,7 @@ export function locateBoard(
     boardCornerCandidates: evaluated.map((candidate) => ({
       source: candidate.source,
       score: candidate.score,
+      qualityScore: candidate.qualityScore,
       selected: candidate.source === selected.source,
       hingeSnapped: candidate.hingeSnapped,
       cornersClipped: candidate.cornersClipped,

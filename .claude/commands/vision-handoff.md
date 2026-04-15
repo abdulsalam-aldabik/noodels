@@ -1,36 +1,30 @@
 # /vision-handoff
 
-Use this command to continue IQ Noodles board localization, rectification, and mapping work with strict debug-first execution and full cross-agent logging.
+Use this command as the default entrypoint for a full rewrite or continuation of IQ Noodles board localization, rectification, and mapping.
 
-## Command behavior
+## Start Here
 
-1. Read chat.json and current code as source of truth.
-2. Treat older markdown planning docs as potentially stale.
-3. Before edits, inspect debug evidence and record findings.
-4. Log every action in logs/agent-work-log.md with timestamp and validation.
-5. Do not make broad rewrites without evidence.
+1. Read docs/context/rewrite-kit/AGENT_HANDOFF_FULL_REWRITE_CLAUDE.md.
+2. Run /vision-rebuild-kickoff.
+3. Use /vision-plan-opus for planning.
+4. Use /vision-implement-phase for implementation.
+5. Use /vision-memory-sync at session boundaries.
+6. Use /vision-handoff-to-copilot when Claude hands over to Copilot.
 
-## Required startup steps
+## Core Rules
 
-1. Create or continue logs/agent-work-log.md.
-2. Inspect these files first:
-- webapp-v4/src/vision/BoardLocator.ts
-- webapp-v4/src/vision/RectifiedDetector.ts
-- webapp-v4/src/vision/PieceMapper.ts
-- webapp-v4/src/board/gridGeometry.ts
-- webapp-v4/src/pipeline/ScanPipeline.ts
-- webapp-v4/src/pipeline/DebugArtifacts.ts
-- webapp-v4/src/dev/ScanLabPage.tsx
-- webapp-v4/src/dev/RectifiedGridLabPage.tsx
-- webapp-v4/src/vision/visionTypes.ts
-3. Identify top 3 proven mismatch sources with evidence.
-4. Propose a minimal patch plan mapped one-to-one to those sources.
-5. Implement and validate each patch incrementally.
+1. No blind edits.
+2. Evidence first, hypothesis second, patch third.
+3. Append every major step to logs/agent-work-log.md.
+4. Validate each phase before moving on.
+5. Keep structured state in automation/vision-rebuild/state-template.json.
 
-## Output format
+## Model Split Preference
 
-1. Diagnostic findings
-2. Patch plan
-3. Implemented changes
-4. Validation evidence
-5. Remaining risks and next step
+1. Opus for planning and architecture decisions.
+2. Other models for implementation-heavy work.
+3. If model switching is unavailable, state it and continue with best available model.
+
+## Reference Index
+
+Use docs/context/rewrite-kit/CLAUDE_REWRITE_KIT_INDEX.md to locate all prompts, commands, agents, skills, templates, and handoff files.

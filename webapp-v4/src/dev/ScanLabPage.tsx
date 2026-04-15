@@ -143,7 +143,7 @@ export default function ScanLabPage() {
   const [sweepRows, setSweepRows] = useState<SweepRow[]>([]);
 
   // Config state
-  const [topRatio, setTopRatio] = useState(0.10);
+  const [topRatio, setTopRatio] = useState(0.062);
   const [sideRatio, setSideRatio] = useState(0.03);
   const [bottomRatio, setBottomRatio] = useState(0.03);
   const [marginCells, setMarginCells] = useState(1.0);

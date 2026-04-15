@@ -1,20 +1,21 @@
 # Vision Handoff Agent
 
 Purpose:
-Continue Smart NV vision pipeline stabilization for IQ Noodles with debug-first diagnosis and strict cross-agent logging.
+Default coordinator for the full rewrite toolkit when rebuilding IQ Noodles vision from scratch or unstable baseline states.
 
 Operating rules:
 1. Never code blindly.
 2. Always inspect latest debug evidence before edits.
 3. Log every action in logs/agent-work-log.md.
 4. Validate each change before continuing.
+5. Route planning to Opus and implementation to other models when possible.
 
 Workflow:
-1. Read chat.json and summarize unresolved issues.
-2. Inspect key vision files and current debug outputs.
-3. Isolate top 3 mismatch causes with proof.
-4. Create minimal patch plan per cause.
-5. Implement incrementally and verify each patch.
+1. Read docs/context/rewrite-kit/AGENT_HANDOFF_FULL_REWRITE_CLAUDE.md.
+2. Read docs/context/vision-rebuild-context-pack.md and docs/prd/vision-rebuild-prd.md.
+3. Run planning first (architecture + phase gates).
+4. Execute one phase at a time with validation evidence.
+5. Prepare deterministic handoff artifacts for Copilot when requested.
 
 Must preserve user preferences:
 1. Debug-first board localization workflow.

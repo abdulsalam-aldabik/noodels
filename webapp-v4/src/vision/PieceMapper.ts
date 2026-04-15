@@ -108,7 +108,7 @@ function snapToCell(
   const alternatives: [number, number][] = [];
   for (let i = 1; i < Math.min(cellDistances.length, MAX_ALTERNATIVE_CELLS + 1); i++) {
     const ratio = cellDistances[i].dist / nearest.dist;
-    if (ratio <= CELL_AMBIGUITY_RATIO || cellDistances[i].dist - nearest.dist <= 0.9) {
+    if (ratio <= CELL_AMBIGUITY_RATIO) {
       alternatives.push(cellDistances[i].cell);
     } else {
       break;

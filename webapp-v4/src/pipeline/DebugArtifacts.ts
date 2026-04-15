@@ -84,6 +84,7 @@ export function createScanDebug(sourceType: "camera" | "upload"): ScanDebug {
     hingeSnapped: false,
     cornersClipped: false,
     cellSpacingPx: 0,
+    pinDetectionCount: 0,
     allDetections: [],
     rectifiedDetectionsCount: 0,
     pieceMappings: [],

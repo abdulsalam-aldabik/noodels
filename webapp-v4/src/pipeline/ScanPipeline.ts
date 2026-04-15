@@ -14,6 +14,10 @@ import {
   type RectifiedGeometry,
 } from "../vision/RectifiedDetector";
 import {
+  detectPinsInRectified,
+  computePinRefinedHomography,
+} from "../vision/PinDetector";
+import {
   rasterizeMaskToBoardCells,
   findBestPlacementByCoverage,
   MIN_COVERAGE_IOU,
@@ -265,6 +269,22 @@ async function runRectifiedStage(
       output.rectifiedGeometry = rectified.geometry;
       debug.timings.rectify = rectified.timings.warpMs;
       debug.timings.rectifiedInference = rectified.timings.inferenceMs;
+
+      // Pin-based homography refinement: detect the 21 physical board pins in
+      // the rectified image and refit rectifiedToBoardMatrix from their positions.
+      // This replaces the scale-only matrix from buildRectifiedGeometry with one
+      // anchored to actual pin locations, correcting edge distortion from imperfect corners.
+      const pins = extractPinsFromCanvas(rectified.rectifiedCanvas, rectified.geometry);
+      debug.pinDetectionCount = pins.length;
+      if (pins.length >= 4) {
+        const refinedMatrix = computePinRefinedHomography(pins);
+        if (refinedMatrix) {
+          output.rectifiedGeometry = {
+            ...rectified.geometry,
+            rectifiedToBoardMatrix: refinedMatrix,
+          };
+        }
+      }
     } else {
       debug.timings.rectify = now() - tRectify;
       debug.timings.rectifiedInference = 0;
@@ -282,6 +302,21 @@ async function runRectifiedStage(
   }
 
   return output;
+}
+
+/** Extracts ImageData from the rectified OffscreenCanvas and runs pin detection. */
+function extractPinsFromCanvas(
+  canvas: OffscreenCanvas,
+  geometry: RectifiedGeometry,
+) {
+  try {
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return [];
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    return detectPinsInRectified(imageData, geometry);
+  } catch {
+    return [];
+  }
 }
 
 function runMappingStage(

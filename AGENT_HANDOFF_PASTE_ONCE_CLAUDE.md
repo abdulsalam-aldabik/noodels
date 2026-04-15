@@ -1,5 +1,7 @@
 # Claude Code VS Code Handoff Paste-Once
 
+For full from-scratch rebuild workflow, use docs/context/rewrite-kit/AGENT_HANDOFF_FULL_REWRITE_CLAUDE.md.
+
 Copy from the line below and paste once into Claude Code extension in VS Code.
 
 ---

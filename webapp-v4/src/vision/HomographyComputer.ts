@@ -105,6 +105,75 @@ function gaussianElimination(A: number[][], b: number[]): number[] {
 }
 
 /**
+ * Solves an overdetermined system Ax = b in the least-squares sense via normal
+ * equations: (A^T A) x = A^T b. A is (rows × cols), result is cols-vector.
+ */
+function leastSquaresSolve(A: number[][], b: number[]): number[] {
+  const rows = A.length;
+  const cols = A[0].length;
+
+  const AtA: number[][] = Array.from({ length: cols }, () => new Array<number>(cols).fill(0));
+  const Atb: number[] = new Array<number>(cols).fill(0);
+
+  for (let i = 0; i < rows; i++) {
+    for (let j = 0; j < cols; j++) {
+      Atb[j] += A[i][j] * b[i];
+      for (let k = 0; k < cols; k++) {
+        AtA[j][k] += A[i][j] * A[i][k];
+      }
+    }
+  }
+
+  return gaussianElimination(AtA, Atb);
+}
+
+/**
+ * Computes a 3×3 homography from N ≥ 4 point correspondences.
+ * For N = 4, uses the exact 4-point DLT.
+ * For N > 4, fits in the least-squares sense via normal equations on the
+ * overdetermined 2N×8 DLT system (with h[8] = 1 fixed).
+ *
+ * Use this instead of computeHomography when you have more than 4 correspondences
+ * (e.g. from detected board pins) and want a robust fit.
+ */
+export function computeHomographyLeastSquares(
+  srcPoints: [number, number][],
+  dstPoints: [number, number][],
+): number[][] {
+  const n = srcPoints.length;
+  if (n < 4) throw new Error(`computeHomographyLeastSquares: need ≥4 points, got ${n}`);
+  if (n === 4) {
+    return computeHomography(
+      srcPoints as [[number, number], [number, number], [number, number], [number, number]],
+      dstPoints as [[number, number], [number, number], [number, number], [number, number]],
+    );
+  }
+
+  // Each point pair (x,y)→(u,v) contributes two rows to Ah=b (h[8]=1 fixed):
+  //   [-x, -y, -1,  0,  0,  0, u·x, u·y] h = -u
+  //   [ 0,  0,  0, -x, -y, -1, v·x, v·y] h = -v
+  const A: number[][] = [];
+  const b: number[] = [];
+
+  for (let i = 0; i < n; i++) {
+    const [x, y] = srcPoints[i];
+    const [u, v] = dstPoints[i];
+    A.push([-x, -y, -1, 0, 0, 0, u * x, u * y]);
+    b.push(-u);
+    A.push([0, 0, 0, -x, -y, -1, v * x, v * y]);
+    b.push(-v);
+  }
+
+  const h = leastSquaresSolve(A, b);
+
+  return [
+    [h[0], h[1], h[2]],
+    [h[3], h[4], h[5]],
+    [h[6], h[7], 1],
+  ];
+}
+
+/**
  * Orders four corner points as [TL, TR, BR, BL] based on their geometric position.
  *
  * Strategy:
