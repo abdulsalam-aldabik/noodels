@@ -1,0 +1,469 @@
+{
+  "timestamp": "2026-04-14T08:58:34.476Z",
+  "sourceType": "upload",
+  "timings": {
+    "preprocess": 84.06499999761581,
+    "inference": 129.0649999976158,
+    "boardLocate": 0.3149999976158142,
+    "rectify": 100.18999999761581,
+    "rectifiedInference": 139.53499999642372,
+    "directMap": 12.965000003576279,
+    "assignment": 0.17000000178813934,
+    "validate": 1.2749999910593033,
+    "hint": 4.825000002980232,
+    "total": 474.64000000059605
+  },
+  "postprocess": {
+    "tensorShape0": [
+      1,
+      300,
+      38
+    ],
+    "tensorShape1": [
+      1,
+      32,
+      160,
+      160
+    ],
+    "layout": "detections_first",
+    "numRows": 38,
+    "numAnchors": 300,
+    "numMaskCoeffs": 32,
+    "scoresPreSigmoid": true,
+    "maxBoardScore": 0.8994776010513306,
+    "aboveThreshold": 11,
+    "afterNMS": 11,
+    "countsByClass": {
+      "1": 1,
+      "2": 1,
+      "3": 1,
+      "4": 1,
+      "5": 1,
+      "6": 1,
+      "7": 1,
+      "8": 1,
+      "9": 1,
+      "10": 1,
+      "11": 1
+    },
+    "maxConfByClass": {
+      "1": 0.5297195911407471,
+      "2": 0.9463513493537903,
+      "3": 0.9791386723518372,
+      "4": 0.9560607075691223,
+      "5": 0.9797366261482239,
+      "6": 0.9832344055175781,
+      "7": 0.9445958137512207,
+      "8": 0.9313193559646606,
+      "9": 0.9660356044769287,
+      "10": 0.4840601980686188,
+      "11": 0.8994776010513306
+    }
+  },
+  "boardDetected": true,
+  "boardConfidence": 0.8994776010513306,
+  "boardCornerSource": "mask_diagonal_extremes",
+  "hingeSnapped": false,
+  "cornersClipped": false,
+  "cellSpacingPx": 42.666666666666664,
+  "allDetections": [
+    {
+      "classId": 6,
+      "label": "I",
+      "confidence": 0.983,
+      "bbox": [
+        577.6102066040039,
+        1527.8743743896484,
+        1078.105354309082,
+        2343.5134887695312
+      ],
+      "centroid": [
+        815.669014084507,
+        1923.5915492957747
+      ]
+    },
+    {
+      "classId": 5,
+      "label": "K",
+      "confidence": 0.98,
+      "bbox": [
+        671.174430847168,
+        1290.7055854797363,
+        1330.3180694580078,
+        1698.9477157592773
+      ],
+      "centroid": [
+        976.3786764705883,
+        1482.9044117647059
+      ]
+    },
+    {
+      "classId": 3,
+      "label": "B",
+      "confidence": 0.979,
+      "bbox": [
+        169.7856903076172,
+        1537.093448638916,
+        790.3812408447266,
+        2194.2203521728516
+      ],
+      "centroid": [
+        419.94584837545125,
+        1907.2202166064983
+      ]
+    },
+    {
+      "classId": 9,
+      "label": "F",
+      "confidence": 0.966,
+      "bbox": [
+        1330.1897048950195,
+        2250.460433959961,
+        1999.7615814208984,
+        3107.294273376465
+      ],
+      "centroid": [
+        1632.7970297029703,
+        2614.2945544554455
+      ]
+    },
+    {
+      "classId": 4,
+      "label": "A",
+      "confidence": 0.956,
+      "bbox": [
+        152.64863967895508,
+        2423.695945739746,
+        827.1110534667969,
+        3127.6060104370117
+      ],
+      "centroid": [
+        534.1194968553459,
+        2697.48427672956
+      ]
+    },
+    {
+      "classId": 2,
+      "label": "H",
+      "confidence": 0.946,
+      "bbox": [
+        914.546012878418,
+        1678.2913208007812,
+        1349.293327331543,
+        2330.0979614257812
+      ],
+      "centroid": [
+        1152.9545454545455,
+        1973.2954545454545
+      ]
+    },
+    {
+      "classId": 7,
+      "label": "G",
+      "confidence": 0.945,
+      "bbox": [
+        811.119270324707,
+        2499.766159057617,
+        1330.6358337402344,
+        3123.4392166137695
+      ],
+      "centroid": [
+        1058.3865814696485,
+        2792.0926517571884
+      ]
+    },
+    {
+      "classId": 8,
+      "label": "D",
+      "confidence": 0.931,
+      "bbox": [
+        160.1283073425293,
+        2180.9213638305664,
+        1010.1181030273438,
+        2598.685836791992
+      ],
+      "centroid": [
+        643.4343434343434,
+        2358.1649831649834
+      ]
+    },
+    {
+      "classId": 11,
+      "label": "board",
+      "confidence": 0.899,
+      "bbox": [
+        84.25455093383789,
+        959.3357086181641,
+        2234.044647216797,
+        3298.0690002441406
+      ],
+      "centroid": [
+        1174.4858194414376,
+        2101.212383632821
+      ]
+    },
+    {
+      "classId": 1,
+      "label": "C",
+      "confidence": 0.53,
+      "bbox": [
+        1304.4136047363281,
+        1309.5939636230469,
+        1562.6380920410156,
+        2065.704917907715
+      ],
+      "centroid": [
+        1411.7875647668393,
+        1681.217616580311
+      ]
+    },
+    {
+      "classId": 10,
+      "label": "E",
+      "confidence": 0.484,
+      "bbox": [
+        1490.0842666625977,
+        1518.1629180908203,
+        1980.4079055786133,
+        2322.642135620117
+      ],
+      "centroid": [
+        1712.3745819397993,
+        1904.933110367893
+      ]
+    }
+  ],
+  "rectifiedDetectionsCount": 13,
+  "pieceMappings": [
+    {
+      "classId": 3,
+      "pieceKey": "B",
+      "confidence": 0.9810372591018677,
+      "cellConfidence": 0.4729229252943764,
+      "candidateCell": [
+        5,
+        1
+      ],
+      "boardCentroid": [
+        1.737885273972603,
+        4.9942208904109595
+      ],
+      "ambiguous": true,
+      "dropped": false,
+      "centroidRectifiedPx": [
+        116.81643835616438,
+        255.75342465753425
+      ]
+    },
+    {
+      "classId": 7,
+      "pieceKey": "G",
+      "confidence": 0.9738695621490479,
+      "cellConfidence": 0.784666769019531,
+      "candidateCell": [
+        11,
+        6
+      ],
+      "boardCentroid": [
+        5.883826335877863,
+        10.721817066521266
+      ],
+      "ambiguous": true,
+      "dropped": false,
+      "centroidRectifiedPx": [
+        293.70992366412213,
+        500.13086150490733
+      ]
+    },
+    {
+      "classId": 5,
+      "pieceKey": "K",
+      "confidence": 0.9304492473602295,
+      "cellConfidence": 0.6216723681917635,
+      "candidateCell": [
+        2,
+        6
+      ],
+      "boardCentroid": [
+        5.530943627450982,
+        1.7539828431372553
+      ],
+      "ambiguous": true,
+      "dropped": false,
+      "centroidRectifiedPx": [
+        278.65359477124184,
+        117.50326797385621
+      ]
+    },
+    {
+      "classId": 1,
+      "pieceKey": "C",
+      "confidence": 0.8354943990707397,
+      "cellConfidence": 0.35,
+      "candidateCell": [
+        1,
+        8
+      ],
+      "boardCentroid": [
+        8.541306515957448,
+        2.0234375
+      ],
+      "ambiguous": false,
+      "dropped": true,
+      "centroidRectifiedPx": [
+        407.09574468085106,
+        129
+      ]
+    },
+    {
+      "classId": 4,
+      "pieceKey": "A",
+      "confidence": 0.7212637662887573,
+      "cellConfidence": 0.6685695760976358,
+      "candidateCell": [
+        10,
+        2
+      ],
+      "boardCentroid": [
+        2.4629352557127326,
+        9.968545973884659
+      ],
+      "ambiguous": true,
+      "dropped": true,
+      "centroidRectifiedPx": [
+        147.7519042437432,
+        467.9912948857454
+      ]
+    },
+    {
+      "classId": 2,
+      "pieceKey": "H",
+      "confidence": 0.6077722907066345,
+      "cellConfidence": 0.35,
+      "candidateCell": [
+        6,
+        7
+      ],
+      "boardCentroid": [
+        6.704113924050635,
+        4.798259493670887
+      ],
+      "ambiguous": true,
+      "dropped": true,
+      "centroidRectifiedPx": [
+        328.7088607594937,
+        247.39240506329114
+      ]
+    },
+    {
+      "classId": 6,
+      "pieceKey": "I",
+      "confidence": 0.47320789098739624,
+      "cellConfidence": 0.6593133985934192,
+      "candidateCell": [
+        5,
+        4
+      ],
+      "boardCentroid": [
+        4.387803819444445,
+        4.722330729166667
+      ],
+      "ambiguous": true,
+      "dropped": true,
+      "centroidRectifiedPx": [
+        229.87962962962962,
+        244.15277777777777
+      ]
+    },
+    {
+      "classId": 8,
+      "pieceKey": "D",
+      "confidence": 0.46576690673828125,
+      "cellConfidence": 0.4512109779809609,
+      "candidateCell": [
+        8,
+        4
+      ],
+      "boardCentroid": [
+        3.2573014018691593,
+        7.803300233644862
+      ],
+      "ambiguous": true,
+      "dropped": true,
+      "centroidRectifiedPx": [
+        181.6448598130841,
+        375.60747663551405
+      ]
+    }
+  ],
+  "confirmedPlacements": [
+    {
+      "classId": 3,
+      "pieceKey": "B",
+      "orientationIndex": 7,
+      "positions": [
+        60,
+        70,
+        71,
+        74,
+        86,
+        87,
+        100,
+        101
+      ]
+    },
+    {
+      "classId": 7,
+      "pieceKey": "G",
+      "orientationIndex": 0,
+      "positions": [
+        130,
+        131,
+        146,
+        147,
+        160,
+        161,
+        172,
+        173
+      ]
+    },
+    {
+      "classId": 5,
+      "pieceKey": "K",
+      "orientationIndex": 5,
+      "positions": [
+        18,
+        19,
+        31,
+        34,
+        35,
+        45,
+        48,
+        49
+      ]
+    }
+  ],
+  "droppedPieces": [
+    1,
+    4,
+    2,
+    6,
+    8
+  ],
+  "warnings": [
+    "Piece 1: dropped due to conflict with piece(s) 5",
+    "Piece 4: dropped due to conflict with piece(s) 7",
+    "Piece 2: dropped due to conflict with piece(s) 5",
+    "Piece 6: dropped due to conflict with piece(s) 5, 3",
+    "Piece 8: dropped due to conflict with piece(s) 3, 7"
+  ],
+  "artifactPaths": {
+    "raw": "debug-output/scan-2026-04-14T08-58-34-476Z-raw.jpg",
+    "yolo": "debug-output/scan-2026-04-14T08-58-34-476Z-yolo.jpg",
+    "corners": "debug-output/scan-2026-04-14T08-58-34-476Z-corners.jpg",
+    "rectified": "debug-output/scan-2026-04-14T08-58-34-476Z-rectified.jpg",
+    "rectifiedMapped": "debug-output/scan-2026-04-14T08-58-34-476Z-rectifiedMapped.jpg"
+  },
+  "error": null,
+  "errorStage": null
+}

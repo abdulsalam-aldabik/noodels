@@ -1,355 +1,308 @@
-import type { Tensor } from "onnxruntime-web";
 import {
-  NUM_CLASSES,
-  MASK_SIZE,
-  CONFIDENCE_GATE,
-  NMS_IOU_THRESHOLD,
-} from "./inferenceTypes";
-import type { RawDetection, LetterboxParams } from "./inferenceTypes";
+  CLASS_NAMES,
+  type BoundingBox,
+  type DetectionMask,
+  type RawDetection,
+} from "./types";
+import { modelToSourceBox, type LetterboxInfo } from "./preprocessing";
 
-// ── Debug snapshot ────────────────────────────────────────────────────────────
+export const DEFAULT_CONF_THRESHOLD = 0.25;
+export const DEFAULT_IOU_THRESHOLD = 0.5;
+export const MASK_COEFFS = 32;
+export const END2END_ATTRS = 6 + MASK_COEFFS;
 
-export interface PostprocessDebug {
-  tensorShape0: number[];
-  tensorShape1: number[];
-  /** Whether rows are the first axis ([1, rows, anchors]) or second ([1, anchors, rows]). */
-  layout: "rows_first" | "anchors_first";
-  numRows: number;
-  numAnchors: number;
-  numMaskCoeffs: number;
-  /** True = values are already in [0,1]; False = raw logits, sigmoid applied. */
-  scoresPreSigmoid: boolean;
-  /** Maximum raw class score seen for class 11 (board) across all anchors. */
-  maxBoardScore: number;
-  /** Count of anchors above CONFIDENCE_GATE before NMS. */
-  aboveThreshold: number;
-  /** Count of detections kept after NMS. */
-  afterNMS: number;
-  /** Detections by class index, count. */
-  countsByClass: Record<number, number>;
-  /** Highest confidence score per class. */
-  maxConfByClass: Record<number, number>;
-}
-
-// ── Internal types ────────────────────────────────────────────────────────────
-
-interface PreNMSBox {
+interface RawAnchor {
+  xc: number;
+  yc: number;
+  w: number;
+  h: number;
+  score: number;
   classId: number;
-  confidence: number;
-  cx: number; cy: number; w: number; h: number;
-  coeffs: Float32Array;
-}
-
-// ── Tensor format detection ───────────────────────────────────────────────────
-
-/**
- * YOLO seg ONNX models come in two common shapes for output0:
- *   rows_first:    [1, 4+NC+NM, anchors]  — dims[1] is small (e.g. 49)
- *   anchors_first: [1, anchors, 4+NC+NM]  — dims[1] is large (e.g. 8400)
- *
- * We distinguish by checking which dimension is larger.
- */
-function detectLayout(output0: Tensor): {
-  layout: "rows_first" | "anchors_first";
-  rows: number;
-  anchors: number;
-} {
-  const d1 = output0.dims[1];
-  const d2 = output0.dims[2];
-  if (d1 <= d2) {
-    return { layout: "rows_first", rows: d1, anchors: d2 };
-  }
-  return { layout: "anchors_first", rows: d2, anchors: d1 };
-}
-
-/** Access element at (row, anchor) accounting for layout. */
-function getVal(
-  data: Float32Array,
-  row: number,
-  anchor: number,
-  layout: "rows_first" | "anchors_first",
-  rows: number,
-  anchors: number,
-): number {
-  if (layout === "rows_first") return data[row * anchors + anchor];
-  return data[anchor * rows + row];
+  maskCoeffs: Float32Array;
 }
 
 /**
- * Samples a small set of values to detect whether class scores are already
- * post-sigmoid (values bounded in [0,1]) or raw logits (can exceed 1).
- *
- * Strategy: check the max absolute value of class score entries across a sample
- * of 200 anchors. If every value is within [0, 1.05] (allowing small float error),
- * treat as pre-sigmoid. Otherwise apply sigmoid.
+ * Decode a YOLOv8-seg `output0` tensor of shape [1, 4+numClasses+32, numAnchors]
+ * into a list of surviving anchors after confidence filtering.
+ * The raw tensor is stored in channel-major order, which is why we index as
+ * `data[channel * numAnchors + anchorIdx]`.
  */
-function detectPreSigmoid(
-  data: Float32Array,
-  anchors: number,
-  layout: "rows_first" | "anchors_first",
-  rows: number,
-): boolean {
-  const sampleStep = Math.max(1, Math.floor(anchors / 200));
-  let maxAbs = 0;
-  for (let a = 0; a < anchors; a += sampleStep) {
-    for (let c = 0; c < NUM_CLASSES; c++) {
-      const v = Math.abs(getVal(data, 4 + c, a, layout, rows, anchors));
-      if (v > maxAbs) maxAbs = v;
-    }
+export function decodeDetectionOutput(
+  output0: Float32Array,
+  numClasses: number,
+  numAnchors: number,
+  confThreshold: number = DEFAULT_CONF_THRESHOLD,
+): RawAnchor[] {
+  const channels = 4 + numClasses + MASK_COEFFS;
+  if (output0.length !== channels * numAnchors) {
+    throw new Error(
+      `decodeDetectionOutput: expected ${channels * numAnchors} values, got ${output0.length}`,
+    );
   }
-  return maxAbs <= 1.05;
-}
-
-function sigmoid(x: number): number {
-  return 1 / (1 + Math.exp(-x));
-}
-
-// ── Box decoding ──────────────────────────────────────────────────────────────
-
-function decodeBoxes(
-  output0: Tensor,
-  debug: Partial<PostprocessDebug>,
-): PreNMSBox[] {
-  const data = output0.data as Float32Array;
-  const { layout, rows, anchors } = detectLayout(output0);
-  const numMaskCoeffs = Math.max(0, rows - 4 - NUM_CLASSES);
-  const preSigmoid = detectPreSigmoid(data, anchors, layout, rows);
-
-  debug.layout = layout;
-  debug.numRows = rows;
-  debug.numAnchors = anchors;
-  debug.numMaskCoeffs = numMaskCoeffs;
-  debug.scoresPreSigmoid = preSigmoid;
-
-  const maxConfByClass: Record<number, number> = {};
-  let maxBoardScore = 0;
-  let aboveThreshold = 0;
-  const boxes: PreNMSBox[] = [];
-
-  for (let a = 0; a < anchors; a++) {
+  const survivors: RawAnchor[] = [];
+  for (let a = 0; a < numAnchors; a++) {
     let bestClass = -1;
     let bestScore = -Infinity;
-
-    for (let c = 0; c < NUM_CLASSES; c++) {
-      const raw = getVal(data, 4 + c, a, layout, rows, anchors);
-      const score = preSigmoid ? raw : sigmoid(raw);
-      if (score > bestScore) { bestScore = score; bestClass = c; }
-      // Track max board score for debug
-      if (c === 11) {
-        const s = preSigmoid ? raw : sigmoid(raw);
-        if (s > maxBoardScore) maxBoardScore = s;
+    for (let c = 0; c < numClasses; c++) {
+      const score = output0[(4 + c) * numAnchors + a];
+      if (score > bestScore) {
+        bestScore = score;
+        bestClass = c;
       }
     }
+    if (bestScore < confThreshold) continue;
 
-    if (bestClass >= 0) {
-      if (!maxConfByClass[bestClass] || bestScore > maxConfByClass[bestClass]) {
-        maxConfByClass[bestClass] = bestScore;
-      }
+    const coeffs = new Float32Array(MASK_COEFFS);
+    for (let k = 0; k < MASK_COEFFS; k++) {
+      coeffs[k] = output0[(4 + numClasses + k) * numAnchors + a];
     }
-
-    if (bestScore < CONFIDENCE_GATE) continue;
-    aboveThreshold++;
-
-    const cx = getVal(data, 0, a, layout, rows, anchors);
-    const cy = getVal(data, 1, a, layout, rows, anchors);
-    const w  = getVal(data, 2, a, layout, rows, anchors);
-    const h  = getVal(data, 3, a, layout, rows, anchors);
-
-    const coeffs = new Float32Array(numMaskCoeffs);
-    for (let m = 0; m < numMaskCoeffs; m++) {
-      coeffs[m] = getVal(data, 4 + NUM_CLASSES + m, a, layout, rows, anchors);
-    }
-
-    boxes.push({ classId: bestClass, confidence: bestScore, cx, cy, w, h, coeffs });
+    survivors.push({
+      xc: output0[0 * numAnchors + a],
+      yc: output0[1 * numAnchors + a],
+      w: output0[2 * numAnchors + a],
+      h: output0[3 * numAnchors + a],
+      score: bestScore,
+      classId: bestClass,
+      maskCoeffs: coeffs,
+    });
   }
-
-  debug.maxBoardScore = maxBoardScore;
-  debug.aboveThreshold = aboveThreshold;
-  debug.maxConfByClass = maxConfByClass;
-
-  return boxes;
+  return survivors;
 }
 
-// ── NMS ───────────────────────────────────────────────────────────────────────
-
-function iou(a: PreNMSBox, b: PreNMSBox): number {
-  const ax1 = a.cx - a.w / 2, ay1 = a.cy - a.h / 2;
-  const ax2 = a.cx + a.w / 2, ay2 = a.cy + a.h / 2;
-  const bx1 = b.cx - b.w / 2, by1 = b.cy - b.h / 2;
-  const bx2 = b.cx + b.w / 2, by2 = b.cy + b.h / 2;
-  const ix1 = Math.max(ax1, bx1), iy1 = Math.max(ay1, by1);
-  const ix2 = Math.min(ax2, bx2), iy2 = Math.min(ay2, by2);
-  const inter = Math.max(0, ix2 - ix1) * Math.max(0, iy2 - iy1);
-  if (inter === 0) return 0;
-  return inter / (a.w * a.h + b.w * b.h - inter);
+function iou(
+  a: [number, number, number, number],
+  b: [number, number, number, number],
+): number {
+  const xi1 = Math.max(a[0], b[0]);
+  const yi1 = Math.max(a[1], b[1]);
+  const xi2 = Math.min(a[2], b[2]);
+  const yi2 = Math.min(a[3], b[3]);
+  const iw = Math.max(0, xi2 - xi1);
+  const ih = Math.max(0, yi2 - yi1);
+  const inter = iw * ih;
+  const areaA = Math.max(0, a[2] - a[0]) * Math.max(0, a[3] - a[1]);
+  const areaB = Math.max(0, b[2] - b[0]) * Math.max(0, b[3] - b[1]);
+  const union = areaA + areaB - inter;
+  return union <= 0 ? 0 : inter / union;
 }
 
-function applyNMS(boxes: PreNMSBox[]): PreNMSBox[] {
-  const byClass = new Map<number, PreNMSBox[]>();
-  for (const box of boxes) {
-    if (!byClass.has(box.classId)) byClass.set(box.classId, []);
-    byClass.get(box.classId)!.push(box);
-  }
-  const kept: PreNMSBox[] = [];
-  for (const candidates of byClass.values()) {
-    candidates.sort((a, b) => b.confidence - a.confidence);
-    const sup = new Uint8Array(candidates.length);
-    for (let i = 0; i < candidates.length; i++) {
-      if (sup[i]) continue;
-      kept.push(candidates[i]);
-      for (let j = i + 1; j < candidates.length; j++) {
-        if (!sup[j] && iou(candidates[i], candidates[j]) > NMS_IOU_THRESHOLD) sup[j] = 1;
+interface NmsAnchor extends RawAnchor {
+  box: [number, number, number, number];
+}
+
+/** Class-wise non-max suppression. */
+export function nonMaxSuppression(
+  anchors: RawAnchor[],
+  iouThreshold: number = DEFAULT_IOU_THRESHOLD,
+): NmsAnchor[] {
+  const withBox: NmsAnchor[] = anchors.map((a) => ({
+    ...a,
+    box: [a.xc - a.w / 2, a.yc - a.h / 2, a.xc + a.w / 2, a.yc + a.h / 2],
+  }));
+  withBox.sort((a, b) => b.score - a.score);
+
+  const kept: NmsAnchor[] = [];
+  const suppressed = new Uint8Array(withBox.length);
+  for (let i = 0; i < withBox.length; i++) {
+    if (suppressed[i]) continue;
+    kept.push(withBox[i]);
+    for (let j = i + 1; j < withBox.length; j++) {
+      if (suppressed[j]) continue;
+      if (withBox[i].classId !== withBox[j].classId) continue;
+      if (iou(withBox[i].box, withBox[j].box) >= iouThreshold) {
+        suppressed[j] = 1;
       }
     }
   }
   return kept;
 }
 
-// ── Mask decoding ─────────────────────────────────────────────────────────────
-
-function decodeMask(
-  box: PreNMSBox,
-  output1: Tensor,
-  params: LetterboxParams,
-  numMaskCoeffs: number,
-): { polygon: [number, number][]; centroid: [number, number] } {
-  const protoData = output1.data as Float32Array;
-  // output1: [1, NM, MASK_H, MASK_W] — detect actual mask size from tensor
-  const maskH = output1.dims[2] ?? MASK_SIZE;
-  const maskW = output1.dims[3] ?? MASK_SIZE;
-  const maskArea = maskH * maskW;
-
-  const maskVals = new Float32Array(maskArea);
-  for (let m = 0; m < Math.min(numMaskCoeffs, box.coeffs.length); m++) {
-    const coeff = box.coeffs[m];
-    const offset = m * maskArea;
-    for (let px = 0; px < maskArea; px++) {
-      maskVals[px] += coeff * protoData[offset + px];
-    }
-  }
-
-  const scaleX = maskW / 640;
-  const scaleY = maskH / 640;
-  const mx1 = Math.max(0, Math.floor((box.cx - box.w / 2) * scaleX));
-  const my1 = Math.max(0, Math.floor((box.cy - box.h / 2) * scaleY));
-  const mx2 = Math.min(maskW - 1, Math.ceil((box.cx + box.w / 2) * scaleX));
-  const my2 = Math.min(maskH - 1, Math.ceil((box.cy + box.h / 2) * scaleY));
-
-  const foreground: [number, number][] = [];
-  for (let my = my1; my <= my2; my++) {
-    for (let mx = mx1; mx <= mx2; mx++) {
-      const val = maskVals[my * maskW + mx];
-      if (sigmoid(val) >= 0.5) {
-        const imgX = (mx / scaleX - params.padX) / params.scale;
-        const imgY = (my / scaleY - params.padY) / params.scale;
-        foreground.push([imgX, imgY]);
-      }
-    }
-  }
-
-  if (foreground.length === 0) {
-    const cx = (box.cx - params.padX) / params.scale;
-    const cy = (box.cy - params.padY) / params.scale;
-    return { polygon: [[cx, cy]], centroid: [cx, cy] };
-  }
-
-  let sumX = 0, sumY = 0;
-  for (const [px, py] of foreground) { sumX += px; sumY += py; }
-  const centroid: [number, number] = [sumX / foreground.length, sumY / foreground.length];
-  const polygon = computeConvexHull(foreground);
-  return { polygon, centroid };
-}
-
-// ── Convex hull ───────────────────────────────────────────────────────────────
-
-function cross(o: [number, number], a: [number, number], b: [number, number]): number {
-  return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
-}
-
-export function computeConvexHull(points: [number, number][]): [number, number][] {
-  if (points.length <= 3) return points;
-  const pts = points.length > 2000
-    ? points.filter((_, i) => i % Math.ceil(points.length / 2000) === 0)
-    : [...points];
-  pts.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-  const lower: [number, number][] = [];
-  for (const p of pts) {
-    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop();
-    lower.push(p);
-  }
-  const upper: [number, number][] = [];
-  for (let i = pts.length - 1; i >= 0; i--) {
-    const p = pts[i];
-    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop();
-    upper.push(p);
-  }
-  lower.pop(); upper.pop();
-  return lower.concat(upper);
-}
-
-// ── Public API ────────────────────────────────────────────────────────────────
-
-export interface DecodeResult {
-  detections: RawDetection[];
-  debug: PostprocessDebug;
+function sigmoid(x: number): number {
+  return 1 / (1 + Math.exp(-x));
 }
 
 /**
- * Converts raw ONNX output tensors into NMS-filtered detections.
- * Automatically handles:
- *   - rows_first vs anchors_first tensor layout
- *   - pre-sigmoid vs raw logit class scores
- *   - variable number of mask prototype coefficients
+ * Build a per-detection binary mask by multiplying the mask-coefficient vector
+ * against the prototype tensor (shape [maskCount, protoH, protoW]), sigmoid,
+ * then cropping to the detection bbox and thresholding.
+ *
+ * Returned mask is at prototype resolution but cropped to the bbox region,
+ * which is the standard YOLO-seg post-step. Coordinates are in prototype
+ * space; callers map them to source-image space via the letterbox info.
  */
-export function decodeDetections(
-  output0: Tensor,
-  output1: Tensor,
-  params: LetterboxParams,
-): DecodeResult {
-  const debugPartial: Partial<PostprocessDebug> = {
-    tensorShape0: [...output0.dims],
-    tensorShape1: [...output1.dims],
+export function buildInstanceMask(
+  maskCoeffs: Float32Array,
+  protos: Float32Array,
+  protoCount: number,
+  protoH: number,
+  protoW: number,
+  bboxModel: [number, number, number, number],
+  inputSize: number,
+  threshold = 0.5,
+): DetectionMask {
+  const scaleX = protoW / inputSize;
+  const scaleY = protoH / inputSize;
+  const x1 = Math.max(0, Math.floor(bboxModel[0] * scaleX));
+  const y1 = Math.max(0, Math.floor(bboxModel[1] * scaleY));
+  const x2 = Math.min(protoW, Math.ceil(bboxModel[2] * scaleX));
+  const y2 = Math.min(protoH, Math.ceil(bboxModel[3] * scaleY));
+  const w = Math.max(0, x2 - x1);
+  const h = Math.max(0, y2 - y1);
+
+  const data = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let sum = 0;
+      const py = y1 + y;
+      const px = x1 + x;
+      const pIdx = py * protoW + px;
+      for (let k = 0; k < protoCount; k++) {
+        sum += maskCoeffs[k] * protos[k * protoH * protoW + pIdx];
+      }
+      data[y * w + x] = sigmoid(sum) > threshold ? 1 : 0;
+    }
+  }
+  return { width: w, height: h, data };
+}
+
+export interface ProtoTensor {
+  data: Float32Array;
+  count: number;
+  height: number;
+  width: number;
+}
+
+function buildDetection(
+  classId: number,
+  score: number,
+  bboxModel: [number, number, number, number],
+  maskCoeffs: Float32Array,
+  proto: ProtoTensor,
+  letterbox: LetterboxInfo,
+): RawDetection | null {
+  const bboxSrc: BoundingBox = modelToSourceBox(bboxModel, letterbox);
+  if (bboxSrc.width <= 0 || bboxSrc.height <= 0) return null;
+
+  const mask = buildInstanceMask(
+    maskCoeffs,
+    proto.data,
+    proto.count,
+    proto.height,
+    proto.width,
+    bboxModel,
+    letterbox.inputSize,
+  );
+
+  return {
+    classId,
+    className: CLASS_NAMES[classId] ?? `class_${classId}`,
+    score,
+    bbox: bboxSrc,
+    mask,
   };
+}
 
-  const rawBoxes = decodeBoxes(output0, debugPartial);
-  const kept = applyNMS(rawBoxes);
-
-  const numMaskCoeffs = debugPartial.numMaskCoeffs ?? 32;
-
-  const detections: RawDetection[] = kept.map((box) => {
-    const { polygon, centroid } = decodeMask(box, output1, params, numMaskCoeffs);
-    const x1 = (box.cx - box.w / 2 - params.padX) / params.scale;
-    const y1 = (box.cy - box.h / 2 - params.padY) / params.scale;
-    const x2 = (box.cx + box.w / 2 - params.padX) / params.scale;
-    const y2 = (box.cy + box.h / 2 - params.padY) / params.scale;
-    return {
-      classId: box.classId,
-      confidence: box.confidence,
-      bbox: [x1, y1, x2, y2] as [number, number, number, number],
-      maskPolygon: polygon,
-      maskCentroid: centroid,
-    };
-  });
-
-  const countsByClass: Record<number, number> = {};
-  for (const d of detections) {
-    countsByClass[d.classId] = (countsByClass[d.classId] ?? 0) + 1;
+/**
+ * Postprocess end-to-end Ultralytics export where output0 is laid out as:
+ *   [1, numDetections, 6 + 32]  (x1, y1, x2, y2, score, class_id, 32 mask coeffs)
+ * or transposed:
+ *   [1, 6 + 32, numDetections]
+ */
+export function postprocessEnd2End(
+  output0: Float32Array,
+  numDetections: number,
+  attrsPerDetection: number,
+  proto: ProtoTensor,
+  letterbox: LetterboxInfo,
+  confThreshold: number = DEFAULT_CONF_THRESHOLD,
+  transposed: boolean = false,
+): RawDetection[] {
+  if (attrsPerDetection < END2END_ATTRS) {
+    throw new Error(
+      `postprocessEnd2End: attrsPerDetection must be >= ${END2END_ATTRS}, got ${attrsPerDetection}`,
+    );
   }
 
-  const debug: PostprocessDebug = {
-    tensorShape0: debugPartial.tensorShape0!,
-    tensorShape1: debugPartial.tensorShape1!,
-    layout: debugPartial.layout!,
-    numRows: debugPartial.numRows!,
-    numAnchors: debugPartial.numAnchors!,
-    numMaskCoeffs,
-    scoresPreSigmoid: debugPartial.scoresPreSigmoid!,
-    maxBoardScore: debugPartial.maxBoardScore ?? 0,
-    aboveThreshold: debugPartial.aboveThreshold ?? 0,
-    afterNMS: detections.length,
-    countsByClass,
-    maxConfByClass: debugPartial.maxConfByClass ?? {},
+  const expected = numDetections * attrsPerDetection;
+  if (output0.length !== expected) {
+    throw new Error(
+      `postprocessEnd2End: expected ${expected} values, got ${output0.length}`,
+    );
+  }
+
+  const valueAt = (detIdx: number, attrIdx: number): number => {
+    if (transposed) {
+      return output0[attrIdx * numDetections + detIdx];
+    }
+    return output0[detIdx * attrsPerDetection + attrIdx];
   };
 
-  return { detections, debug };
+  const out: RawDetection[] = [];
+  for (let detIdx = 0; detIdx < numDetections; detIdx++) {
+    const score = valueAt(detIdx, 4);
+    if (score < confThreshold) continue;
+
+    const classId = Math.round(valueAt(detIdx, 5));
+    if (classId < 0) continue;
+
+    const bboxModel: [number, number, number, number] = [
+      valueAt(detIdx, 0),
+      valueAt(detIdx, 1),
+      valueAt(detIdx, 2),
+      valueAt(detIdx, 3),
+    ];
+
+    const maskCoeffs = new Float32Array(MASK_COEFFS);
+    for (let k = 0; k < MASK_COEFFS; k++) {
+      maskCoeffs[k] = valueAt(detIdx, 6 + k);
+    }
+
+    const detection = buildDetection(
+      classId,
+      score,
+      bboxModel,
+      maskCoeffs,
+      proto,
+      letterbox,
+    );
+    if (detection) {
+      out.push(detection);
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Full postprocessing: decode + NMS + build masks + letterbox-unwind bbox ->
+ * list of RawDetection in original source-image coordinates. Masks remain in
+ * prototype coordinates and carry their crop origin through bbox.
+ */
+export function postprocess(
+  output0: Float32Array,
+  proto: ProtoTensor,
+  numClasses: number,
+  numAnchors: number,
+  letterbox: LetterboxInfo,
+  confThreshold: number = DEFAULT_CONF_THRESHOLD,
+  iouThreshold: number = DEFAULT_IOU_THRESHOLD,
+): RawDetection[] {
+  const anchors = decodeDetectionOutput(output0, numClasses, numAnchors, confThreshold);
+  const kept = nonMaxSuppression(anchors, iouThreshold);
+
+  const out: RawDetection[] = [];
+  for (const k of kept) {
+    const detection = buildDetection(
+      k.classId,
+      k.score,
+      k.box,
+      k.maskCoeffs,
+      proto,
+      letterbox,
+    );
+    if (detection) {
+      out.push(detection);
+    }
+  }
+  return out;
 }

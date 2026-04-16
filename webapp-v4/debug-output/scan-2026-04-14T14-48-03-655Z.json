@@ -1,0 +1,411 @@
+{
+  "timestamp": "2026-04-14T14:48:03.655Z",
+  "sourceType": "upload",
+  "timings": {
+    "preprocess": 83.69500002264977,
+    "inference": 134.02500000596046,
+    "boardLocate": 0.22499999403953552,
+    "rectify": 113.84000000357628,
+    "rectifiedInference": 116.75999999046326,
+    "directMap": 5.9749999940395355,
+    "assignment": 0.04999998211860657,
+    "validate": 1.695000022649765,
+    "hint": 2.570000022649765,
+    "total": 460.0600000023842
+  },
+  "postprocess": {
+    "tensorShape0": [
+      1,
+      300,
+      38
+    ],
+    "tensorShape1": [
+      1,
+      32,
+      160,
+      160
+    ],
+    "layout": "detections_first",
+    "numRows": 38,
+    "numAnchors": 300,
+    "numMaskCoeffs": 32,
+    "scoresPreSigmoid": true,
+    "maxBoardScore": 0.9666839838027954,
+    "aboveThreshold": 5,
+    "afterNMS": 5,
+    "countsByClass": {
+      "3": 1,
+      "5": 1,
+      "9": 1,
+      "10": 1,
+      "11": 1
+    },
+    "maxConfByClass": {
+      "3": 0.9790713787078857,
+      "5": 0.8536310791969299,
+      "9": 0.8702138066291809,
+      "10": 0.6969920992851257,
+      "11": 0.9666839838027954
+    }
+  },
+  "boardDetected": true,
+  "boardConfidence": 0.9666839838027954,
+  "boardBbox": [
+    -16.837120056152344,
+    1320.5376625061035,
+    2095.371437072754,
+    3498.2696533203125
+  ],
+  "boardCornerSource": "bbox",
+  "boardCornerScore": 0.9999958268935246,
+  "boardCornerCandidates": [
+    {
+      "source": "bbox",
+      "score": 0.9999958268935246,
+      "selected": true,
+      "hingeSnapped": false,
+      "cornersClipped": false,
+      "rawCorners": [
+        [
+          -16.837120056152344,
+          1320.5376625061035
+        ],
+        [
+          2095.371437072754,
+          1320.5376625061035
+        ],
+        [
+          2095.371437072754,
+          3498.2696533203125
+        ],
+        [
+          -16.837120056152344,
+          3498.2696533203125
+        ]
+      ],
+      "boardCorners": [
+        [
+          46.529136657714844,
+          1455.5570459365845
+        ],
+        [
+          2032.0051803588867,
+          1455.5570459365845
+        ],
+        [
+          2032.0051803588867,
+          3432.9376935958862
+        ],
+        [
+          46.529136657714844,
+          3432.9376935958862
+        ]
+      ]
+    },
+    {
+      "source": "mask_bbox_fused",
+      "score": 0.9660119166151526,
+      "selected": false,
+      "hingeSnapped": false,
+      "cornersClipped": false,
+      "rawCorners": [
+        [
+          -8.418560028076172,
+          1385.2688312530518
+        ],
+        [
+          2022.685718536377,
+          1347.7688312530518
+        ],
+        [
+          2060.185718536377,
+          3411.6348266601562
+        ],
+        [
+          4.081439971923828,
+          3474.1348266601562
+        ]
+      ],
+      "boardCorners": [
+        [
+          53.66897474477436,
+          1512.8808480674097
+        ],
+        [
+          1963.7075108925203,
+          1477.6260852301202
+        ],
+        [
+          1997.754736165944,
+          3351.2117879711645
+        ],
+        [
+          65.00790921542432,
+          3409.97596012749
+        ]
+      ]
+    },
+    {
+      "source": "mask_diagonal_extremes",
+      "score": 0.9592175620742622,
+      "selected": false,
+      "hingeSnapped": false,
+      "cornersClipped": false,
+      "rawCorners": [
+        [
+          0,
+          1450
+        ],
+        [
+          1950,
+          1375
+        ],
+        [
+          2025,
+          3325
+        ],
+        [
+          25,
+          3450
+        ]
+      ],
+      "boardCorners": [
+        [
+          60.817453249375085,
+          1570.2097260121654
+        ],
+        [
+          1895.4217110918269,
+          1499.6892762183097
+        ],
+        [
+          1963.5072938380438,
+          3269.470736735711
+        ],
+        [
+          83.47375567427783,
+          3387.0297460559946
+        ]
+      ]
+    }
+  ],
+  "hingeSnapped": false,
+  "cornersClipped": false,
+  "cellSpacingPx": 40,
+  "allDetections": [
+    {
+      "classId": 3,
+      "label": "B",
+      "confidence": 0.979,
+      "bbox": [
+        867.3040390014648,
+        1945.9857940673828,
+        1386.7515563964844,
+        2544.5764541625977
+      ],
+      "centroid": [
+        1141.2556053811659,
+        2172.8699551569507
+      ]
+    },
+    {
+      "classId": 11,
+      "label": "board",
+      "confidence": 0.967,
+      "bbox": [
+        -16.837120056152344,
+        1320.5376625061035,
+        2095.371437072754,
+        3498.2696533203125
+      ],
+      "centroid": [
+        1004.4036300777874,
+        2401.4347450302507
+      ]
+    },
+    {
+      "classId": 9,
+      "label": "F",
+      "confidence": 0.87,
+      "bbox": [
+        1263.3209228515625,
+        2453.2997131347656,
+        1867.6816940307617,
+        3268.958282470703
+      ],
+      "centroid": [
+        1537.3554913294797,
+        2790.3179190751443
+      ]
+    },
+    {
+      "classId": 5,
+      "label": "K",
+      "confidence": 0.854,
+      "bbox": [
+        641.5148735046387,
+        1595.6734657287598,
+        1233.414649963379,
+        1961.7713928222656
+      ],
+      "centroid": [
+        908.2159624413146,
+        1766.3145539906104
+      ]
+    },
+    {
+      "classId": 10,
+      "label": "E",
+      "confidence": 0.697,
+      "bbox": [
+        167.5480842590332,
+        2260.9806060791016,
+        587.3050689697266,
+        3047.7466583251953
+      ],
+      "centroid": [
+        395.26022304832713,
+        2643.6802973977697
+      ]
+    }
+  ],
+  "rectifiedDetectionsCount": 3,
+  "pieceMappings": [
+    {
+      "classId": 3,
+      "pieceKey": "B",
+      "confidence": 0.9680739641189575,
+      "cellConfidence": 0.4198045858125995,
+      "candidateCell": [
+        5,
+        8
+      ],
+      "boardCentroid": [
+        7.267727930535455,
+        4.648480463096961
+      ],
+      "ambiguous": true,
+      "dropped": false,
+      "centroidRectifiedPx": [
+        350.70911722141824,
+        245.93921852387842
+      ]
+    },
+    {
+      "classId": 9,
+      "pieceKey": "F",
+      "confidence": 0.8702138066291809,
+      "cellConfidence": 0.35,
+      "candidateCell": [
+        9,
+        9
+      ],
+      "boardCentroid": [
+        10.012123292355385,
+        8.95020486877927
+      ],
+      "ambiguous": true,
+      "dropped": false
+    },
+    {
+      "classId": 5,
+      "pieceKey": "K",
+      "confidence": 0.9737516641616821,
+      "cellConfidence": 0.6642395515535272,
+      "candidateCell": [
+        2,
+        6
+      ],
+      "boardCentroid": [
+        5.610703363914373,
+        1.736544342507645
+      ],
+      "ambiguous": true,
+      "dropped": true,
+      "centroidRectifiedPx": [
+        284.42813455657495,
+        129.4617737003058
+      ]
+    },
+    {
+      "classId": 10,
+      "pieceKey": "E",
+      "confidence": 0.6969920992851257,
+      "cellConfidence": 0.35,
+      "candidateCell": [
+        7,
+        2
+      ],
+      "boardCentroid": [
+        1.9589746247290323,
+        7.911999753384128
+      ],
+      "ambiguous": true,
+      "dropped": false
+    }
+  ],
+  "confirmedPlacements": [
+    {
+      "classId": 3,
+      "pieceKey": "B",
+      "orientationIndex": 4,
+      "positions": [
+        48,
+        49,
+        64,
+        65,
+        78,
+        79,
+        91,
+        105
+      ]
+    },
+    {
+      "classId": 9,
+      "pieceKey": "F",
+      "orientationIndex": 6,
+      "positions": [
+        82,
+        83,
+        94,
+        95,
+        108,
+        109,
+        120,
+        121,
+        134,
+        135
+      ]
+    },
+    {
+      "classId": 10,
+      "pieceKey": "E",
+      "orientationIndex": 1,
+      "positions": [
+        57,
+        71,
+        86,
+        87,
+        100,
+        101,
+        113,
+        127
+      ]
+    }
+  ],
+  "droppedPieces": [
+    5
+  ],
+  "warnings": [
+    "Piece 5: dropped due to conflict with piece(s) 3"
+  ],
+  "artifactPaths": {
+    "raw": "debug-output/scan-2026-04-14T14-48-03-655Z-raw.jpg",
+    "yolo": "debug-output/scan-2026-04-14T14-48-03-655Z-yolo.jpg",
+    "corners": "debug-output/scan-2026-04-14T14-48-03-655Z-corners.jpg",
+    "rectified": "debug-output/scan-2026-04-14T14-48-03-655Z-rectified.jpg",
+    "rectifiedMapped": "debug-output/scan-2026-04-14T14-48-03-655Z-rectifiedMapped.jpg"
+  },
+  "error": null,
+  "errorStage": null
+}

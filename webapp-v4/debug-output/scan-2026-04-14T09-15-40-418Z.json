@@ -1,0 +1,185 @@
+{
+  "timestamp": "2026-04-14T09:15:40.418Z",
+  "sourceType": "upload",
+  "timings": {
+    "preprocess": 74.51500000059605,
+    "inference": 113.17000000178814,
+    "boardLocate": 0.034999996423721313,
+    "rectify": 79.29499998688698,
+    "rectifiedInference": 111.50500001013279,
+    "directMap": 3.3250000029802322,
+    "assignment": 0.015000000596046448,
+    "validate": 28.03999999165535,
+    "hint": 25.984999999403954,
+    "total": 436.20000000298023
+  },
+  "postprocess": {
+    "tensorShape0": [
+      1,
+      300,
+      38
+    ],
+    "tensorShape1": [
+      1,
+      32,
+      160,
+      160
+    ],
+    "layout": "detections_first",
+    "numRows": 38,
+    "numAnchors": 300,
+    "numMaskCoeffs": 32,
+    "scoresPreSigmoid": true,
+    "maxBoardScore": 0.9666839838027954,
+    "aboveThreshold": 5,
+    "afterNMS": 5,
+    "countsByClass": {
+      "3": 1,
+      "5": 1,
+      "9": 1,
+      "10": 1,
+      "11": 1
+    },
+    "maxConfByClass": {
+      "3": 0.9790713787078857,
+      "5": 0.8536310791969299,
+      "9": 0.8702138066291809,
+      "10": 0.6969920992851257,
+      "11": 0.9666839838027954
+    }
+  },
+  "boardDetected": true,
+  "boardConfidence": 0.9666839838027954,
+  "boardCornerSource": "mask_diagonal_extremes",
+  "hingeSnapped": false,
+  "cornersClipped": false,
+  "cellSpacingPx": 45.714285714285715,
+  "allDetections": [
+    {
+      "classId": 3,
+      "label": "B",
+      "confidence": 0.979,
+      "bbox": [
+        867.3040390014648,
+        1945.9857940673828,
+        1386.7515563964844,
+        2544.5764541625977
+      ],
+      "centroid": [
+        1141.2556053811659,
+        2172.8699551569507
+      ]
+    },
+    {
+      "classId": 11,
+      "label": "board",
+      "confidence": 0.967,
+      "bbox": [
+        -16.837120056152344,
+        1320.5376625061035,
+        2095.371437072754,
+        3498.2696533203125
+      ],
+      "centroid": [
+        1004.4036300777874,
+        2401.4347450302507
+      ]
+    },
+    {
+      "classId": 9,
+      "label": "F",
+      "confidence": 0.87,
+      "bbox": [
+        1263.3209228515625,
+        2453.2997131347656,
+        1867.6816940307617,
+        3268.958282470703
+      ],
+      "centroid": [
+        1537.3554913294797,
+        2790.3179190751443
+      ]
+    },
+    {
+      "classId": 5,
+      "label": "K",
+      "confidence": 0.854,
+      "bbox": [
+        641.5148735046387,
+        1595.6734657287598,
+        1233.414649963379,
+        1961.7713928222656
+      ],
+      "centroid": [
+        908.2159624413146,
+        1766.3145539906104
+      ]
+    },
+    {
+      "classId": 10,
+      "label": "E",
+      "confidence": 0.697,
+      "bbox": [
+        167.5480842590332,
+        2260.9806060791016,
+        587.3050689697266,
+        3047.7466583251953
+      ],
+      "centroid": [
+        395.26022304832713,
+        2643.6802973977697
+      ]
+    }
+  ],
+  "rectifiedDetectionsCount": 1,
+  "pieceMappings": [
+    {
+      "classId": 3,
+      "pieceKey": "B",
+      "confidence": 0.5946951508522034,
+      "cellConfidence": 0.5435402568770948,
+      "candidateCell": [
+        5,
+        8
+      ],
+      "boardCentroid": [
+        7.553237410071942,
+        4.543075539568346
+      ],
+      "ambiguous": true,
+      "dropped": false,
+      "centroidRectifiedPx": [
+        368.1479958890031,
+        230.54059609455294
+      ]
+    }
+  ],
+  "confirmedPlacements": [
+    {
+      "classId": 3,
+      "pieceKey": "B",
+      "orientationIndex": 4,
+      "positions": [
+        48,
+        49,
+        64,
+        65,
+        78,
+        79,
+        91,
+        105
+      ]
+    }
+  ],
+  "droppedPieces": [],
+  "warnings": [],
+  "artifactPaths": {
+    "raw": "debug-output/scan-2026-04-14T09-15-40-418Z-raw.jpg",
+    "yolo": "debug-output/scan-2026-04-14T09-15-40-418Z-yolo.jpg",
+    "corners": "debug-output/scan-2026-04-14T09-15-40-418Z-corners.jpg",
+    "rectified": "debug-output/scan-2026-04-14T09-15-40-418Z-rectified.jpg",
+    "rectifiedMapped": "debug-output/scan-2026-04-14T09-15-40-418Z-rectifiedMapped.jpg"
+  },
+  "error": null,
+  "errorStage": null
+}

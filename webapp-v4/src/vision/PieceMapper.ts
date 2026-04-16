@@ -1,116 +1,232 @@
-import { BOARD_WIDTH, BOARD_HEIGHT, MISSING_POSITIONS } from "../engine/constants";
-import { CLASS_PIECE_FIRST, CLASS_PIECE_LAST, MAX_CELL_RADIUS, CELL_AMBIGUITY_RATIO } from "../inference/inferenceTypes";
-import type { RawDetection } from "../inference/inferenceTypes";
-import { applyHomography } from "./HomographyComputer";
-import { PIECE_ASSETS } from "../pieces/assets";
-import type { CalibratedBoardRef, MappedPiecePlacement } from "./visionTypes";
+import { snapToCell } from "../board/gridGeometry";
+import {
+  BOARD_CLASS_ID,
+  CLASS_NAMES,
+  HINGE_CLASS_ID,
+  type RawDetection,
+} from "../inference/types";
+import { PIECE_ASSETS, type PieceKey } from "../pieces/assets";
+import { applyHomography } from "./Rectifier";
+import {
+  matchPieceOrientation,
+  type BoardCell,
+  type OrientationMatchInput,
+  type OrientationMatchResult,
+} from "./OrientationMatcher";
+import type { BoardState, PiecePlacement, RectifiedFrame } from "./types";
 
-// ── Valid cell lookup ─────────────────────────────────────────────────────────
+const PIECE_KEYS: readonly PieceKey[] = [
+  "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K",
+];
 
-const MISSING_SET = new Set<number>(MISSING_POSITIONS);
+const PIECE_KEY_SET = new Set<PieceKey>(PIECE_KEYS);
 
-/** All valid board positions as [row, col] pairs, precomputed. */
-const VALID_CELLS: [number, number][] = (() => {
-  const cells: [number, number][] = [];
-  for (let pos = 0; pos < BOARD_WIDTH * BOARD_HEIGHT; pos++) {
-    if (!MISSING_SET.has(pos)) {
-      cells.push([Math.floor(pos / BOARD_WIDTH), pos % BOARD_WIDTH]);
-    }
-  }
-  return cells;
-})();
-
-// ── Piece key lookup ──────────────────────────────────────────────────────────
-
-const PIECE_KEY_BY_CLASS_ID: Record<number, string> = Object.fromEntries(
-  PIECE_ASSETS.map((a) => [a.pieceId, a.key]),
+const PIECE_ID_BY_KEY = PIECE_ASSETS.reduce<Record<PieceKey, number>>(
+  (acc, asset) => {
+    acc[asset.key] = asset.pieceId;
+    return acc;
+  },
+  {} as Record<PieceKey, number>,
 );
 
-// ── Distance ──────────────────────────────────────────────────────────────────
-
-function euclidean(r1: number, c1: number, r2: number, c2: number): number {
-  const dr = r1 - r2, dc = c1 - c2;
-  return Math.sqrt(dr * dr + dc * dc);
+export interface PieceMapperOptions {
+  topK?: number;
+  ambiguityDelta?: number;
+  orientationMatcher?: (input: OrientationMatchInput) => OrientationMatchResult;
 }
 
-// ── Public API ────────────────────────────────────────────────────────────────
+function clamp01(value: number): number {
+  if (value < 0) return 0;
+  if (value > 1) return 1;
+  return value;
+}
 
-/**
- * Projects each piece detection's mask centroid through the board homography H
- * and snaps it to the nearest valid board cell.
- *
- * Only processes piece detections (classId 0–10).
- * One detection per class — if the same class appears multiple times (e.g. due
- * to a noisy model), only the highest-confidence detection is kept.
- *
- * @param detections - Full list of YOLO detections (all classes)
- * @param boardRef   - Calibrated board reference containing the homography H
- */
-export function mapPiecesToGrid(
-  detections: RawDetection[],
-  boardRef: CalibratedBoardRef,
-): MappedPiecePlacement[] {
-  const H = boardRef.homographyMatrix;
+function imagePointToBoardCell(
+  imageX: number,
+  imageY: number,
+  homographyForward: number[],
+): BoardCell {
+  const boardPoint = applyHomography(homographyForward, imageX, imageY);
+  const snapped = snapToCell(boardPoint.x, boardPoint.y);
+  return { row: snapped.row, col: snapped.col };
+}
 
-  // Keep only one detection per class (highest confidence)
-  const byClass = new Map<number, RawDetection>();
-  for (const det of detections) {
-    if (det.classId < CLASS_PIECE_FIRST || det.classId > CLASS_PIECE_LAST) continue;
-    const existing = byClass.get(det.classId);
-    if (!existing || det.confidence > existing.confidence) {
-      byClass.set(det.classId, det);
+function centroidFromMask(detection: RawDetection): { x: number; y: number } | null {
+  const mask = detection.mask;
+  if (!mask || mask.width <= 0 || mask.height <= 0) return null;
+
+  let sumX = 0;
+  let sumY = 0;
+  let count = 0;
+
+  for (let y = 0; y < mask.height; y++) {
+    for (let x = 0; x < mask.width; x++) {
+      const value = mask.data[y * mask.width + x];
+      if (!value) continue;
+      sumX += x + 0.5;
+      sumY += y + 0.5;
+      count += 1;
     }
   }
 
-  const results: MappedPiecePlacement[] = [];
+  if (count === 0) return null;
 
-  for (const [classId, det] of byClass) {
-    const [imgCx, imgCy] = det.maskCentroid;
+  const normX = sumX / count / mask.width;
+  const normY = sumY / count / mask.height;
+  return {
+    x: detection.bbox.x + normX * detection.bbox.width,
+    y: detection.bbox.y + normY * detection.bbox.height,
+  };
+}
 
-    // Project centroid through homography: image pixels → board grid (col, row)
-    const [boardCol, boardRow] = applyHomography(H, imgCx, imgCy);
+function detectionAnchorPoint(detection: RawDetection): { x: number; y: number } {
+  const fromMask = centroidFromMask(detection);
+  if (fromMask) return fromMask;
+  return {
+    x: detection.bbox.x + detection.bbox.width / 2,
+    y: detection.bbox.y + detection.bbox.height / 2,
+  };
+}
 
-    // Find nearest valid cell
-    let nearestDist = Infinity;
-    let nearestCell: [number, number] = [0, 0];
-    let secondDist = Infinity;
-    const alternatives: [number, number][] = [];
+function observedCellsFromMask(
+  detection: RawDetection,
+  homographyForward: number[],
+): BoardCell[] {
+  const mask = detection.mask;
+  if (!mask || mask.width <= 0 || mask.height <= 0) return [];
 
-    for (const [r, c] of VALID_CELLS) {
-      const dist = euclidean(boardRow, boardCol, r, c);
-      if (dist < nearestDist) {
-        secondDist = nearestDist;
-        nearestDist = dist;
-        nearestCell = [r, c];
-      } else if (dist < secondDist) {
-        secondDist = dist;
-      }
+  const keys = new Set<string>();
+  const cells: BoardCell[] = [];
+
+  for (let y = 0; y < mask.height; y++) {
+    for (let x = 0; x < mask.width; x++) {
+      const value = mask.data[y * mask.width + x];
+      if (!value) continue;
+
+      const imageX = detection.bbox.x + ((x + 0.5) / mask.width) * detection.bbox.width;
+      const imageY = detection.bbox.y + ((y + 0.5) / mask.height) * detection.bbox.height;
+      const cell = imagePointToBoardCell(imageX, imageY, homographyForward);
+      const key = `${cell.row},${cell.col}`;
+
+      if (keys.has(key)) continue;
+      keys.add(key);
+      cells.push(cell);
+    }
+  }
+
+  return cells;
+}
+
+export function pieceKeyFromDetection(detection: RawDetection): PieceKey | null {
+  if (PIECE_KEY_SET.has(detection.className as PieceKey)) {
+    return detection.className as PieceKey;
+  }
+
+  if (detection.classId >= 0 && detection.classId < 11) {
+    const className = CLASS_NAMES[detection.classId];
+    if (className && PIECE_KEY_SET.has(className as PieceKey)) {
+      return className as PieceKey;
+    }
+  }
+
+  return null;
+}
+
+interface CandidatePlacement {
+  pieceKey: PieceKey;
+  placement: PiecePlacement;
+  rawDetection: RawDetection;
+}
+
+export function mapPiecesToBoardState(
+  detections: RawDetection[],
+  rectified: RectifiedFrame,
+  options: PieceMapperOptions = {},
+): BoardState {
+  const matchOrientation = options.orientationMatcher ?? matchPieceOrientation;
+
+  const candidates: CandidatePlacement[] = [];
+  const unassigned: RawDetection[] = [];
+
+  for (let detectionIndex = 0; detectionIndex < detections.length; detectionIndex++) {
+    const detection = detections[detectionIndex];
+
+    if (detection.classId === BOARD_CLASS_ID || detection.classId === HINGE_CLASS_ID) {
+      continue;
     }
 
-    // Collect all cells within ambiguity threshold
-    if (secondDist / nearestDist < CELL_AMBIGUITY_RATIO) {
-      for (const [r, c] of VALID_CELLS) {
-        const dist = euclidean(boardRow, boardCol, r, c);
-        if (dist > nearestDist && dist < nearestDist * CELL_AMBIGUITY_RATIO) {
-          alternatives.push([r, c]);
-        }
-      }
+    const pieceKey = pieceKeyFromDetection(detection);
+    if (!pieceKey) {
+      unassigned.push(detection);
+      continue;
     }
 
-    // Cell confidence: 1 at exact centre, 0 at MAX_CELL_RADIUS
-    const cellConfidence = Math.max(0, 1 - nearestDist / MAX_CELL_RADIUS);
+    const pieceId = PIECE_ID_BY_KEY[pieceKey];
+    if (pieceId === undefined) {
+      unassigned.push(detection);
+      continue;
+    }
 
-    results.push({
-      classId,
-      pieceKey: PIECE_KEY_BY_CLASS_ID[classId] ?? `piece_${classId}`,
-      imageCentroid: [imgCx, imgCy],
-      boardCentroid: [boardCol, boardRow], // (col, row) in grid space
-      candidateCell: nearestCell,
-      cellConfidence,
-      ambiguous: alternatives.length > 0,
-      alternativeCells: alternatives,
+    const anchorPoint = detectionAnchorPoint(detection);
+    const anchorCell = imagePointToBoardCell(
+      anchorPoint.x,
+      anchorPoint.y,
+      rectified.homography.forward,
+    );
+
+    const observedCells = observedCellsFromMask(
+      detection,
+      rectified.homography.forward,
+    );
+    if (observedCells.length === 0) {
+      observedCells.push(anchorCell);
+    }
+
+    const match = matchOrientation({
+      pieceId,
+      observedCells,
+      topK: options.topK,
+      ambiguityDelta: options.ambiguityDelta,
+    });
+
+    const placement: PiecePlacement = {
+      classId: detection.classId,
+      className: pieceKey,
+      cell: anchorCell,
+      orientation: match.orientation,
+      mirrored: match.mirrored,
+      confidence: clamp01(detection.score * match.confidence),
+      ambiguous: match.ambiguous,
+      topK: match.topK.map((candidate) => ({
+        orientation: candidate.orientation,
+        mirrored: candidate.mirrored,
+        score: candidate.score,
+      })),
+      sourceDetectionIndex: detectionIndex,
+    };
+
+    candidates.push({
+      pieceKey,
+      placement,
+      rawDetection: detection,
     });
   }
 
-  return results;
+  // Keep the highest-confidence candidate per piece key.
+  candidates.sort((a, b) => b.placement.confidence - a.placement.confidence);
+  const placements: PiecePlacement[] = [];
+  const usedPieceKeys = new Set<PieceKey>();
+  for (const candidate of candidates) {
+    if (usedPieceKeys.has(candidate.pieceKey)) {
+      unassigned.push(candidate.rawDetection);
+      continue;
+    }
+    usedPieceKeys.add(candidate.pieceKey);
+    placements.push(candidate.placement);
+  }
+
+  return {
+    placements,
+    unassignedDetections: unassigned,
+  };
 }

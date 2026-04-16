@@ -1,0 +1,134 @@
+{
+  "schemaVersion": 1,
+  "timestamp": "2026-04-15T14:32:04.992Z",
+  "imageSize": {
+    "width": 2252,
+    "height": 4000
+  },
+  "inference": {
+    "modelPath": "/models/yolo26n-seg.onnx",
+    "durationMs": 275.5750000011176,
+    "numDetections": 7,
+    "classHistogram": {
+      "J": 1,
+      "F": 1,
+      "G": 1,
+      "board": 1,
+      "B": 2,
+      "H": 1
+    }
+  },
+  "localization": {
+    "status": "ok",
+    "cornerSource": "fallback_bbox",
+    "cornerScore": 0.9214762953165765,
+    "hingeFound": false,
+    "candidates": [
+      {
+        "source": "fallback_bbox",
+        "score": 0.9214762953165765
+      },
+      {
+        "source": "bbox_fused",
+        "score": 0.9194442357532524
+      },
+      {
+        "source": "hull_diagonal_extremes",
+        "score": 0.8856944446424007
+      }
+    ],
+    "corners": [
+      {
+        "x": 67.18196868896484,
+        "y": 945.409107208252
+      },
+      {
+        "x": 2105.788230895996,
+        "y": 945.409107208252
+      },
+      {
+        "x": 2105.788230895996,
+        "y": 3013.159942626953
+      },
+      {
+        "x": 67.18196868896484,
+        "y": 3013.159942626953
+      }
+    ]
+  },
+  "rectification": {
+    "canvasSize": {
+      "width": 560,
+      "height": 560
+    },
+    "cellSpacingPx": 40,
+    "expectedCellSpacingPx": 40,
+    "homographyCondition": 243309.38849248106
+  },
+  "mapping": {
+    "pieces": [
+      {
+        "classId": 9,
+        "className": "J",
+        "cell": {
+          "row": 5,
+          "col": 2
+        },
+        "orientation": 0,
+        "mirrored": false,
+        "confidence": 0.659692366917928,
+        "ambiguous": false
+      },
+      {
+        "classId": 5,
+        "className": "F",
+        "cell": {
+          "row": 4,
+          "col": 10
+        },
+        "orientation": 180,
+        "mirrored": false,
+        "confidence": 0.5114640944144305,
+        "ambiguous": true
+      },
+      {
+        "classId": 6,
+        "className": "G",
+        "cell": {
+          "row": 3,
+          "col": 5
+        },
+        "orientation": 90,
+        "mirrored": false,
+        "confidence": 0.44025019498971796,
+        "ambiguous": true
+      },
+      {
+        "classId": 1,
+        "className": "B",
+        "cell": {
+          "row": 8,
+          "col": 8
+        },
+        "orientation": 0,
+        "mirrored": false,
+        "confidence": 0.42590456742506766,
+        "ambiguous": false
+      },
+      {
+        "classId": 7,
+        "className": "H",
+        "cell": {
+          "row": 4,
+          "col": 7
+        },
+        "orientation": 180,
+        "mirrored": false,
+        "confidence": 0.17718583345413208,
+        "ambiguous": false
+      }
+    ],
+    "unassigned": 1
+  },
+  "status": "ok"
+}

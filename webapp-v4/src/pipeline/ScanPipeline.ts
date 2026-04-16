@@ -1,93 +1,170 @@
 import { InferenceRunner } from "../inference/InferenceRunner";
-import { preprocessImage, loadImageFromFile } from "../inference/preprocessing";
+import type { InferenceResult } from "../inference/types";
+import { expectedCellSpacingPx } from "../board/gridGeometry";
 import { locateBoard } from "../vision/BoardLocator";
-import { mapPiecesToGrid } from "../vision/PieceMapper";
-import { validatePartialState } from "./PartialStateValidator";
-import { formatHint } from "./HintFormatter";
-import type { ScanResult } from "../vision/visionTypes";
+import { mapPiecesToBoardState } from "../vision/PieceMapper";
+import { mapPiecesToBoardStateV2 } from "../vision/PieceMapperV2";
+import { rectify, DEFAULT_RECTIFIED_CANVAS } from "../vision/Rectifier";
+import {
+  classHistogram,
+  renderCornersArtifact,
+  renderMappedArtifact,
+  renderRawArtifact,
+  renderRectifiedArtifact,
+  renderYoloArtifact,
+} from "./DebugArtifacts";
+import {
+  TELEMETRY_SCHEMA_VERSION,
+  type DebugArtifactBlobs,
+  type ScanResult,
+  type ScanStatus,
+  type ScanTelemetry,
+} from "./types";
+
+export type MapperVersion = "v1" | "v2";
+
+export interface ScanPipelineOptions {
+  runner?: InferenceRunner;
+  rectifiedCanvasSize?: number;
+  emitArtifacts?: boolean;
+  mapperVersion?: MapperVersion;
+}
 
 /**
- * Runs the full IQ Noodles scan pipeline on a single image.
- *
- * Stages:
- *   1. Preprocess image → 640×640 tensor (letterbox)
- *   2. ONNX inference → RawDetection[]
- *   3. Board localization (class 11) → CalibratedBoardRef
- *   4. Hinge interpretation (class 12) → orientation correction (inside BoardLocator)
- *   5. Piece mapping (classes 0–10) → MappedPiecePlacement[]
- *   6. Partial state validation → ValidationReport
- *   7. Solver handoff → HintPayload
- *
- * The photo is never stored or transmitted — only the derived JSON structures leave
- * this function.
- *
- * @param source - The captured image (File, HTMLImageElement, HTMLCanvasElement, or ImageBitmap)
- * @returns ScanResult — either an error with stage name, or full pipeline output
+ * Staged orchestrator: image -> inference -> localization -> rectification -> mapping -> artifacts.
  */
-export async function runScanPipeline(
-  source: File | HTMLImageElement | HTMLCanvasElement | ImageBitmap,
-): Promise<ScanResult> {
-  const runner = InferenceRunner.getInstance();
+export class ScanPipeline {
+  private readonly runner: InferenceRunner;
+  private readonly canvasSize: number;
+  private readonly emitArtifacts: boolean;
+  private readonly mapperVersion: MapperVersion;
 
-  if (!runner.isReady) {
-    return { ok: false, error: "Model not loaded. Please wait for model to finish loading.", stage: "init" };
+  constructor(options: ScanPipelineOptions = {}) {
+    this.runner = options.runner ?? new InferenceRunner();
+    this.canvasSize = options.rectifiedCanvasSize ?? DEFAULT_RECTIFIED_CANVAS;
+    this.emitArtifacts = options.emitArtifacts ?? true;
+    this.mapperVersion = options.mapperVersion ?? "v1";
   }
 
-  // ── Stage 1: Preprocess ────────────────────────────────────────────────────
-
-  let preprocessed: Awaited<ReturnType<typeof preprocessImage>>;
-  try {
-    const imageSource = source instanceof File
-      ? await loadImageFromFile(source)
-      : source;
-    preprocessed = await preprocessImage(imageSource);
-  } catch (err) {
-    return { ok: false, error: `Image preprocessing failed: ${String(err)}`, stage: "preprocess" };
+  async ensureLoaded(): Promise<void> {
+    await this.runner.ensureLoaded();
   }
 
-  // ── Stage 2: ONNX Inference ────────────────────────────────────────────────
+  async run(
+    image: HTMLImageElement | HTMLCanvasElement | ImageBitmap,
+  ): Promise<ScanResult> {
+    const inference: InferenceResult = await this.runner.run(image);
+    const boardRef = locateBoard(inference.detections, inference.imageSize);
 
-  let detections: Awaited<ReturnType<typeof runner.run>>;
-  try {
-    detections = await runner.run(preprocessed.tensor, preprocessed.params);
-  } catch (err) {
-    return { ok: false, error: `Inference failed: ${String(err)}`, stage: "inference" };
-  }
+    let rectifiedFrame: ScanResult["rectified"];
+    let boardState: ScanResult["boardState"];
+    let rectifiedCanvas: HTMLCanvasElement | null = null;
+    let status: ScanStatus = "ok";
+    let message: string | undefined;
 
-  // ── Stage 3+4: Board localization + hinge interpretation ──────────────────
+    if (boardRef.status === "failed") {
+      status = "failed";
+      message = boardRef.message ?? "board localization failed";
+    } else {
+      const { frame, canvas } = rectify(image, boardRef, {
+        canvasSize: this.canvasSize,
+      });
+      rectifiedFrame = frame;
+      rectifiedCanvas = canvas;
+      boardState =
+        this.mapperVersion === "v2"
+          ? mapPiecesToBoardStateV2(inference.detections, frame)
+          : mapPiecesToBoardState(inference.detections, frame);
 
-  const boardRef = locateBoard(detections);
-  if (!boardRef) {
+      if (boardRef.status === "lowConfidence") {
+        status = "lowConfidence";
+        message = boardRef.message;
+      }
+    }
+
+    const telemetry: ScanTelemetry = {
+      schemaVersion: TELEMETRY_SCHEMA_VERSION,
+      timestamp: new Date().toISOString(),
+      imageSize: inference.imageSize,
+      inference: {
+        modelPath: inference.modelPath,
+        durationMs: inference.durationMs,
+        numDetections: inference.detections.length,
+        classHistogram: classHistogram(inference),
+      },
+      localization: {
+        status: boardRef.status,
+        cornerSource: boardRef.cornerSource,
+        cornerScore: boardRef.cornerScore,
+        hingeFound: boardRef.hingeFound,
+        candidates: boardRef.candidates.map((candidate) => ({
+          source: candidate.source,
+          score: candidate.score,
+        })),
+        corners: boardRef.corners.map((point) => ({ x: point.x, y: point.y })),
+      },
+      rectification: rectifiedFrame
+        ? {
+            canvasSize: rectifiedFrame.canvasSize,
+            cellSpacingPx: rectifiedFrame.cellSpacingPx,
+            expectedCellSpacingPx: expectedCellSpacingPx(this.canvasSize),
+            homographyCondition: rectifiedFrame.homography.condition,
+          }
+        : {
+            canvasSize: { width: this.canvasSize, height: this.canvasSize },
+            cellSpacingPx: 0,
+            expectedCellSpacingPx: expectedCellSpacingPx(this.canvasSize),
+            homographyCondition: 0,
+          },
+      mapping: {
+        mapperVersion: this.mapperVersion,
+        pieces: (boardState?.placements ?? []).map((placement) => ({
+          classId: placement.classId,
+          className: placement.className,
+          cell: placement.cell,
+          orientation: placement.orientation,
+          mirrored: placement.mirrored,
+          confidence: placement.confidence,
+          ambiguous: placement.ambiguous,
+        })),
+        unassigned: boardState?.unassignedDetections.length ?? 0,
+      },
+      status,
+      message,
+    };
+
+    const artifacts: DebugArtifactBlobs = {
+      report: JSON.stringify(telemetry, null, 2),
+    };
+
+    if (this.emitArtifacts) {
+      artifacts.raw = await renderRawArtifact(image);
+      artifacts.yolo = await renderYoloArtifact(image, inference);
+      artifacts.corners = await renderCornersArtifact(image, boardRef);
+      if (rectifiedCanvas && rectifiedFrame) {
+        artifacts.rectified = await renderRectifiedArtifact(
+          rectifiedCanvas,
+          rectifiedFrame,
+        );
+        if (boardState) {
+          artifacts.mapped = await renderMappedArtifact(
+            rectifiedCanvas,
+            rectifiedFrame,
+            boardState,
+          );
+        }
+      }
+    }
+
     return {
-      ok: false,
-      error: "Board not detected. Ensure the full board is visible and the photo is well-lit.",
-      stage: "board_localization",
+      status,
+      inference,
+      boardRef,
+      rectified: rectifiedFrame,
+      boardState,
+      telemetry,
+      artifacts,
     };
   }
-
-  // ── Stage 5: Piece mapping ─────────────────────────────────────────────────
-
-  const mappedPlacements = mapPiecesToGrid(detections, boardRef);
-
-  // ── Stage 6: Validation ────────────────────────────────────────────────────
-
-  const { report, confirmedPlacements } = validatePartialState(mappedPlacements);
-
-  // ── Stage 7: Solver + hint ─────────────────────────────────────────────────
-
-  // Run solver in a way that doesn't block the event loop by deferring to next tick.
-  // The solver is synchronous but we want the UI to remain responsive.
-  const { hint, solverResult } = await new Promise<ReturnType<typeof formatHint>>((resolve) => {
-    setTimeout(() => resolve(formatHint(confirmedPlacements)), 0);
-  });
-
-  return {
-    ok: true,
-    boardRef,
-    mappedPlacements,
-    report,
-    confirmedPlacements,
-    hint,
-    solverResult,
-  };
 }
+
