@@ -2,10 +2,11 @@
 IQ Noodles — Synthetic YOLO Segmentation Dataset Generator (Blender)
 ====================================================================
 Generates training/validation images with per-piece segmentation polygons
-using Blender renders. Outputs YOLO-format labels for 13 classes:
+using Blender renders. Outputs YOLO-format labels for 14 classes:
   0–10  pieces A–K
   11    board polygon
   12    hinge (yaml-only, NOT generated in synthetic data)
+  13    pin (camera-projected disc polygons from board_inner bounds)
 
 Run inside Blender:  blender scene.blend --background --python blender_yolo_generator_v2.py
 """
@@ -94,6 +95,31 @@ BOARD_COLOR = (40, 42, 45)
 HINGE_NAME = "hinge"
 CLASS_BOARD = 11
 CLASS_HINGE = 12
+CLASS_PIN = 13
+
+# ---- Pin label (class 13) ----
+# Pins are camera-projected from canonical board_inner-local positions.
+# 21 pins sit at 2x2-cell-block centers of the 14x14 grid (per the engine's
+# POSITIONS_AROUND_PINS definition). We duplicate the grid-corner math here so
+# the generator stays self-contained and doesn't import webapp engine code.
+# Each synthetic pin label is a fixed-radius disc polygon in render-space.
+PIN_RENDER_RADIUS_PX = 7.0
+PIN_POLYGON_SIDES = 10
+# (row, col) grid-corner for each of the 21 pins, derived once from
+# POSITIONS_AROUND_PINS in the engine: pin center sits at (min_row+1, min_col+1)
+# of each 2x2 cell block.
+PIN_GRID_CORNERS = [
+    (1, 5), (1, 9),
+    (3, 3), (3, 7), (3, 11),
+    (5, 1), (5, 5), (5, 9), (5, 13),
+    (7, 3), (7, 7), (7, 11),
+    (9, 1), (9, 5), (9, 9), (9, 13),
+    (11, 3), (11, 7), (11, 11),
+    (13, 5), (13, 9),
+]
+# When board is visible but a pin projects near a piece, still emit the label —
+# real pins remain partially visible through/beside threading rope, and YOLO
+# handles mild occlusion fine. Skip only on full-frame clipping.
 
 DYNAMIC_PIECE_TARGET_SIZE = 1.0
 DYNAMIC_BOARD_TARGET_SIZE = 12.0
@@ -120,42 +146,16 @@ BOARD_POS_JITTER_Z = 0.30
 BOARD_YAW_JITTER_DEGREES = 12.0
 BOARD_TILT_DEGREES = 4.5
 
-# ---- Solved-grid scene ratios ----
-SOLVED_GRID_SCENE_RATIO = 0.15
-PARTIAL_SOLVED_SCENE_RATIO_WITHIN_SOLVED = 0.65
-PARTIAL_SOLVED_MIN_PIECES = 3
-PARTIAL_SOLVED_MAX_PIECES = 9
-
-SOLVED_LAYOUT_MAX_ATTEMPTS = 18
-SOLVED_MAX_TILT_DEGREES = 1.5
-SOLVED_BOARD_INSET_FRAC = 0.10
-SOLVED_PIECE_Z_LIFT = 0.08
-SOLVED_EDGE_MARGIN_RELAXED = 0.01
-SOLVED_STATIC_FALLBACK_ATTEMPTS = 2
-
 # ---- Board label (class 11) ----
+# Kept for the class-11 board-mask rendering pipeline (see render_board_mask /
+# resolve_board_label_object_name). This is NOT used for any solved-board layout.
 MANUAL_BOARD_INNER_OBJECT_NAME = "board_inner"
 BOARD_LABEL_USE_INNER_MASK = True
 BOARD_INNER_INSET_RATIO = 0.025
 BOARD_INNER_MIN_INSET_PX = 2
 
-# Solved-scene layout source:
-# - True: derive transforms from solver cell placements (preferred; webapp-like behavior)
-# - False: use piece transforms already present in .blend (legacy behavior)
-USE_SOLVER_LAYOUT_FOR_SOLVED = True
-USE_REFERENCE_SOLVED_LAYOUT = False
-SOLVER_GRID_INSET_FRAC = 0.06
-# Use board axes for solved placement by default; board_inner can be opt-in.
-USE_BOARD_INNER_FOR_SOLVED_GRID = False
-# Auto-calibrate solved placement per frame by testing axis/inset variants.
-SOLVED_GRID_AUTO_CALIBRATE = True
-SOLVED_GRID_INSET_CANDIDATES = (0.0, 0.02, 0.04, 0.06)
-# Reject solved attempts whose projected pair-overlap is still too high.
-SOLVED_ACCEPT_MAX_OVERLAP_SUM = 0.05
-
 RANDOM_PIECE_Z = 5.0
 RANDOM_EDGE_MARGIN = 0.05
-SOLVED_EDGE_MARGIN = 0.03
 
 # ---- HDRI backgrounds ----
 HDRI_DIR = bpy.path.abspath("//hdri_env")
@@ -171,243 +171,7 @@ AUTO_DOWNLOAD_HDRIS = [
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# §2  SOLVER CONSTANTS (IQ Noodles board geometry)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-BOARD_WIDTH = 14
-BOARD_HEIGHT = 14
-BIG_GRID_WIDTH = 40
-
-MISSING_POSITIONS = {
-    0, 1, 2, 3, 6, 7, 10, 11, 12, 13,
-    14, 15, 16, 17, 20, 21, 24, 25, 26, 27,
-    28, 29, 32, 33, 36, 37, 40, 41,
-    42, 43, 46, 47, 50, 51, 54, 55,
-    58, 59, 62, 63, 66, 67,
-    72, 73, 76, 77, 80, 81,
-    84, 85, 88, 89, 92, 93, 96, 97,
-    98, 99, 102, 103, 106, 107, 110, 111,
-    114, 115, 118, 119, 122, 123,
-    128, 129, 132, 133, 136, 137,
-    140, 141, 144, 145, 148, 149, 152, 153,
-    154, 155, 158, 159, 162, 163, 166, 167,
-    168, 169, 170, 171, 174, 175, 178, 179, 180, 181,
-    182, 183, 184, 185, 188, 189, 192, 193, 194, 195,
-}
-
-IQ_PIECE_BIG_POSITIONS = [
-    [4, 44, 82, 83, 122, 123],                             # 0  A
-    [44, 45, 48, 49, 86, 87],                               # 1  B
-    [9, 49, 90, 130, 168, 169],                             # 2  C
-    [91, 131, 172, 173, 212, 213, 250, 251],                # 3  D
-    [126, 127, 164, 165, 204, 205, 243, 283],               # 4  E
-    [160, 161, 200, 201, 242, 282, 320, 321],               # 5  F
-    [208, 209, 246, 247, 286, 287, 324, 325],               # 6  G
-    [290, 291, 332, 333, 372, 373, 410, 411],               # 7  H
-    [328, 329, 364, 365, 368, 369, 406, 407],               # 8  I
-    [360, 361, 402, 403, 442, 443, 484, 485, 524, 525],     # 9  J
-    [446, 447, 450, 451, 488, 489, 528, 529],               # 10 K
-]
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# §3  SOLVER
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def _big_positions_to_xy(big_positions):
-    return [(p % BIG_GRID_WIDTH, p // BIG_GRID_WIDTH) for p in big_positions]
-
-
-def _normalize_xy(points):
-    min_x = min(x for x, _ in points)
-    min_y = min(y for _, y in points)
-    return sorted((x - min_x, y - min_y) for x, y in points)
-
-
-def _transform_xy(points, rotation_steps, mirrored):
-    out = []
-    for x, y in points:
-        tx = -x if mirrored else x
-        ty = y
-        if rotation_steps == 0:
-            rx, ry = tx, ty
-        elif rotation_steps == 1:
-            rx, ry = -ty, tx
-        elif rotation_steps == 2:
-            rx, ry = -tx, -ty
-        else:
-            rx, ry = ty, -tx
-        out.append((rx, ry))
-    return out
-
-
-def find_all_piece_orientations(piece_id):
-    base_xy = _big_positions_to_xy(IQ_PIECE_BIG_POSITIONS[piece_id])
-    unique = []
-    seen = set()
-    for mirrored in (False, True):
-        for r in range(4):
-            pts = _transform_xy(base_xy, r, mirrored)
-            norm = tuple(_normalize_xy(pts))
-            if norm not in seen:
-                seen.add(norm)
-                unique.append(list(norm))
-    return unique
-
-
-def find_piece_orientation_variants(piece_id):
-    """Return unique orientation variants with rotation/mirror metadata."""
-    base_xy = _big_positions_to_xy(IQ_PIECE_BIG_POSITIONS[piece_id])
-    variants = []
-    seen = set()
-
-    for mirrored in (False, True):
-        for r in range(4):
-            pts = _transform_xy(base_xy, r, mirrored)
-            norm = tuple(_normalize_xy(pts))
-            if norm in seen:
-                continue
-            seen.add(norm)
-            variants.append({
-                "norm": norm,
-                "rotation_steps": r,
-                "mirrored": mirrored,
-            })
-
-    return variants
-
-
-def generate_placements_for_piece(piece_id):
-    placements = []
-    for orient in find_all_piece_orientations(piece_id):
-        max_x = max(x for x, _ in orient)
-        max_y = max(y for _, y in orient)
-        for dy in range(BOARD_HEIGHT - max_y):
-            for dx in range(BOARD_WIDTH - max_x):
-                cells = []
-                ok = True
-                for x, y in orient:
-                    idx = BOARD_WIDTH * (y + dy) + (x + dx)
-                    if idx in MISSING_POSITIONS:
-                        ok = False
-                        break
-                    cells.append(idx)
-                if ok:
-                    placements.append(tuple(sorted(cells)))
-    return placements
-
-
-def solve_noodles_full():
-    num_pieces = len(IQ_PIECE_BIG_POSITIONS)
-    all_placements = {pid: generate_placements_for_piece(pid) for pid in range(num_pieces)}
-    valid_cells = [i for i in range(BOARD_WIDTH * BOARD_HEIGHT) if i not in MISSING_POSITIONS]
-    cell_coverage = {cell: [] for cell in valid_cells}
-    for pid in range(num_pieces):
-        for placement in all_placements[pid]:
-            for cell in placement:
-                if cell in cell_coverage:
-                    cell_coverage[cell].append((pid, placement))
-
-    occupied = set()
-    remaining = set(range(num_pieces))
-    solution = dict.fromkeys(range(num_pieces), None)
-    states = 0
-
-    def backtrack():
-        nonlocal states
-        if not remaining:
-            return True
-        states += 1
-        best_options = None
-        best_count = 10 ** 9
-        for cell in valid_cells:
-            if cell in occupied:
-                continue
-            options = []
-            for pid, placement in cell_coverage[cell]:
-                if pid not in remaining:
-                    continue
-                if all(c not in occupied for c in placement):
-                    options.append((pid, placement))
-            if not options:
-                return False
-            if len(options) < best_count:
-                best_count = len(options)
-                best_options = options
-                if best_count == 1:
-                    break
-        if best_options is None:
-            return False
-        random.shuffle(best_options)
-        for pid, placement in best_options:
-            for c in placement:
-                occupied.add(c)
-            remaining.remove(pid)
-            solution[pid] = placement
-            if backtrack():
-                return True
-            solution[pid] = None
-            remaining.add(pid)
-            for c in placement:
-                occupied.remove(c)
-        return False
-
-    solved = backtrack()
-    return {"solved": solved, "states": states, "solution": solution, "all_placements": all_placements}
-
-
-def sample_partial_piece_ids(piece_pool=None):
-    pool = list(piece_pool) if piece_pool else list(PIECE_NAMES)
-    if not pool:
-        return []
-    count = random.randint(PARTIAL_SOLVED_MIN_PIECES, PARTIAL_SOLVED_MAX_PIECES)
-    count = max(1, min(count, len(pool)))
-    return random.sample(pool, count)
-
-
-def build_solver_layout_metadata(solver_result):
-    """Build per-piece solved layout metadata from solver cell placements."""
-    if not solver_result or not solver_result.get("solved"):
-        return {}
-
-    metadata = {}
-    solution = solver_result.get("solution", {})
-
-    for pid in range(len(PIECE_NAMES)):
-        placement = solution.get(pid)
-        if placement is None:
-            continue
-
-        cells_xy = sorted((idx % BOARD_WIDTH, idx // BOARD_WIDTH) for idx in placement)
-        xs = [x for x, _ in cells_xy]
-        ys = [y for _, y in cells_xy]
-        placement_norm = tuple(_normalize_xy(cells_xy))
-
-        variant_match = None
-        for variant in find_piece_orientation_variants(pid):
-            if variant["norm"] == placement_norm:
-                variant_match = variant
-                break
-
-        if not variant_match:
-            print(f"WARNING: Could not match orientation metadata for piece id={pid}.")
-            continue
-
-        metadata[PIECE_NAMES[pid]] = {
-            "cells_xy": cells_xy,
-            # Anchor solved placement to piece bbox center in grid-cell space.
-            # This is more stable than raw centroid for asymmetric piece shapes.
-            "anchor_x": 0.5 * (min(xs) + max(xs)),
-            "anchor_y": 0.5 * (min(ys) + max(ys)),
-            "rotation_steps": variant_match["rotation_steps"],
-            "mirrored": variant_match["mirrored"],
-        }
-
-    return metadata
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# §4  BLENDER HELPERS (naming, scaling, materials)
+# §2  BLENDER HELPERS (naming, scaling, materials)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def hex_to_rgb(hex_tuple):
@@ -557,8 +321,9 @@ def hide_unmapped_objects():
     keep = set(PIECE_NAMES) | {BOARD_NAME, HINGE_NAME}
     if MANUAL_BOARD_INNER_OBJECT_NAME:
         keep.add(MANUAL_BOARD_INNER_OBJECT_NAME)
-    # Also keep the camera
+    # Keep camera + any user-placed pin markers (pin_00..pin_20).
     keep.add("Camera")
+    keep.update(PIN_OBJECT_NAME_TEMPLATE.format(i) for i in range(21))
 
     for obj in bpy.data.objects:
         if obj.type == "MESH" and obj.name not in keep:
@@ -718,68 +483,9 @@ def is_overlapping(box1, box2):
     return inter / min(a1, a2) > MAX_ALLOWED_OVERLAP_RATIO
 
 
-def _bbox_intersection_area(box1, box2):
-    ix1 = max(box1[0], box2[0])
-    iy1 = max(box1[1], box2[1])
-    ix2 = min(box1[2], box2[2])
-    iy2 = min(box1[3], box2[3])
-    return max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
-
-
-def evaluate_current_solved_layout_score(scene, cam, piece_names):
-    """Score current solved layout using projected overlap + spread.
-
-    Lower score is better. Overlap is heavily penalized; spread is rewarded.
-    """
-    bboxes = {}
-    for name in piece_names:
-        obj = bpy.data.objects.get(name)
-        if not obj:
-            return float("inf"), float("inf"), 0.0
-        bbox = get_2d_bounding_box(scene, cam, obj)
-        if not bbox:
-            return float("inf"), float("inf"), 0.0
-        bboxes[name] = bbox
-
-    names = list(bboxes.keys())
-    overlap_sum = 0.0
-    for i in range(len(names)):
-        b1 = bboxes[names[i]]
-        a1 = max(1e-9, (b1[2] - b1[0]) * (b1[3] - b1[1]))
-        for j in range(i + 1, len(names)):
-            b2 = bboxes[names[j]]
-            inter = _bbox_intersection_area(b1, b2)
-            if inter <= 0.0:
-                continue
-            a2 = max(1e-9, (b2[2] - b2[0]) * (b2[3] - b2[1]))
-            overlap_sum += inter / min(a1, a2)
-
-    min_x = min(b[0] for b in bboxes.values())
-    max_x = max(b[2] for b in bboxes.values())
-    min_y = min(b[1] for b in bboxes.values())
-    max_y = max(b[3] for b in bboxes.values())
-    spread = max(0.0, max_x - min_x) * max(0.0, max_y - min_y)
-
-    score = (overlap_sum * 1000.0) - (spread * 4.0)
-    return score, overlap_sum, spread
-
-
 def _is_inside_frame(bbox, margin):
     return (bbox[0] >= margin and bbox[2] <= 1.0 - margin and
             bbox[1] >= margin and bbox[3] <= 1.0 - margin)
-
-
-def all_pieces_inside_frame(scene, cam, piece_names, frame_margin):
-    for name in piece_names:
-        obj = bpy.data.objects.get(name)
-        if not obj:
-            return False
-        bbox = get_2d_bounding_box(scene, cam, obj)
-        if not bbox:
-            return False
-        if not _is_inside_frame(bbox, frame_margin):
-            return False
-    return True
 
 
 def try_place_piece(scene, cam, obj, placed_boxes, x_range, y_range, z_value,
@@ -873,22 +579,17 @@ def place_active_pieces(scene, cam, active_pieces, x_range, y_range, z_value,
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# §6  BOARD POSE AND SOLVED-LAYOUT HELPERS
+# §6  BOARD POSE HELPERS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def set_board_pose(board, pose_mode="random"):
+def set_board_pose(board):
+    """Apply a randomized pose to the board object."""
     board_rot_matrix = auto_scale_and_flatten(board, target_size=DYNAMIC_BOARD_TARGET_SIZE)
-    if pose_mode == "solved":
-        yaw_deg = random.choice([0, 90, 180, 270])
-        tilt_x = tilt_y = 0.0
-        jxy = BOARD_POS_JITTER_XY * 0.35
-        jz = BOARD_POS_JITTER_Z * 0.35
-    else:
-        yaw_deg = random.choice([0, 90, 180, 270]) + random.uniform(-BOARD_YAW_JITTER_DEGREES, BOARD_YAW_JITTER_DEGREES)
-        tilt_x = random.uniform(-BOARD_TILT_DEGREES, BOARD_TILT_DEGREES)
-        tilt_y = random.uniform(-BOARD_TILT_DEGREES, BOARD_TILT_DEGREES)
-        jxy = BOARD_POS_JITTER_XY
-        jz = BOARD_POS_JITTER_Z
+    yaw_deg = random.choice([0, 90, 180, 270]) + random.uniform(-BOARD_YAW_JITTER_DEGREES, BOARD_YAW_JITTER_DEGREES)
+    tilt_x = random.uniform(-BOARD_TILT_DEGREES, BOARD_TILT_DEGREES)
+    tilt_y = random.uniform(-BOARD_TILT_DEGREES, BOARD_TILT_DEGREES)
+    jxy = BOARD_POS_JITTER_XY
+    jz = BOARD_POS_JITTER_Z
 
     yaw_mat = mathutils.Euler((0, 0, math.radians(yaw_deg))).to_matrix()
     tilt_mat = mathutils.Euler((math.radians(tilt_x), math.radians(tilt_y), 0)).to_matrix()
@@ -913,22 +614,8 @@ def get_object_world_bounds(obj):
     }
 
 
-def capture_reference_solved_layout(board_obj):
-    if not board_obj:
-        return None
-    bpy.context.view_layer.update()
-    inv = board_obj.matrix_world.inverted()
-    rel = {}
-    for name in PIECE_NAMES:
-        obj = bpy.data.objects.get(name)
-        if not obj:
-            print(f"WARNING: Cannot capture reference layout; missing {name}")
-            return None
-        rel[name] = inv @ obj.matrix_world
-    return rel
-
-
 def capture_relative_transform(parent_obj, child_obj):
+    """Capture the child's transform relative to the parent (used for board_inner)."""
     if not parent_obj or not child_obj:
         return None
     bpy.context.view_layer.update()
@@ -936,305 +623,96 @@ def capture_relative_transform(parent_obj, child_obj):
 
 
 def apply_relative_transform(parent_obj, child_obj, rel_matrix):
+    """Re-attach child's transform to parent using captured relative matrix."""
     if parent_obj and child_obj and rel_matrix is not None:
         child_obj.matrix_world = parent_obj.matrix_world @ rel_matrix
 
 
-def apply_reference_solved_layout(board_obj, rel_transforms):
-    if not board_obj or not rel_transforms:
-        return []
-    hide_all_pieces()
-    placed = []
-    for name in PIECE_NAMES:
-        obj = bpy.data.objects.get(name)
-        rel = rel_transforms.get(name)
-        if not obj or rel is None:
-            continue
-        obj.matrix_world = board_obj.matrix_world @ rel
-        obj.hide_render = False
-        obj.hide_viewport = False
-        placed.append(name)
-    return placed
+PIN_OBJECT_NAME_TEMPLATE = "pin_{:02d}"  # pin_00 .. pin_20
 
 
-def apply_solver_solved_layout(board_obj, solver_layout):
-    """Place pieces from solver metadata onto board grid in board local space.
+def compute_pin_world_positions(board_inner_obj=None):
+    """Return 21 pin centers in world space.
 
-    The board mesh may not use local X/Y as its playable surface axes, so we infer
-    the two largest local bbox spans as grid axes and the smallest span as normal.
+    Preferred path: 21 Empty (or mesh) objects named pin_00..pin_20, manually
+    placed in the scene at each physical pin's world position. These are
+    parented to the board so they inherit pose randomization automatically.
+    The generator just reads their world locations per frame.
+
+    The board_inner_obj argument is kept for call-site compatibility but
+    unused on this path.
     """
-    if not board_obj or not solver_layout:
-        return []
+    bpy.context.view_layer.update()
+    positions = []
+    for i in range(21):
+        name = PIN_OBJECT_NAME_TEMPLATE.format(i)
+        obj = bpy.data.objects.get(name)
+        if obj is None:
+            return []  # partial setup — bail; caller skips pin labels this frame
+        positions.append(obj.matrix_world.translation.copy())
+    return positions
 
-    hide_all_pieces()
 
-    grid_obj = board_obj
-    if USE_BOARD_INNER_FOR_SOLVED_GRID and MANUAL_BOARD_INNER_OBJECT_NAME:
-        board_inner = bpy.data.objects.get(MANUAL_BOARD_INNER_OBJECT_NAME)
-        if board_inner and board_inner.type == "MESH":
-            grid_obj = board_inner
+def _project_world_to_image_norm(scene, cam, world_pt):
+    """Project a world-space point to normalized image coords (top-left origin).
 
-    bbox_local = [mathutils.Vector(v) for v in grid_obj.bound_box]
-    mins = [min(v[i] for v in bbox_local) for i in range(3)]
-    maxs = [max(v[i] for v in bbox_local) for i in range(3)]
-    spans = [maxs[i] - mins[i] for i in range(3)]
+    Returns (x, y) in [0, 1] if the point is in front of the camera and inside
+    the frame; None otherwise.
+    """
+    co = bpy_extras.object_utils.world_to_camera_view(scene, cam, world_pt)
+    if co.z <= 0.0:
+        return None
+    x = co.x
+    y = 1.0 - co.y  # Blender NDC y is bottom-up; YOLO coords are top-down
+    if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
+        return None
+    return (x, y)
 
-    sorted_axes = sorted(range(3), key=lambda idx: spans[idx], reverse=True)
-    axis_u = sorted_axes[0]
-    axis_v = sorted_axes[1]
-    axis_n = sorted_axes[2]
 
-    if spans[axis_u] <= 1e-9 or spans[axis_v] <= 1e-9:
-        return []
+def _disc_polygon_norm(cx, cy, radius_px, res_x, res_y, n_sides=PIN_POLYGON_SIDES):
+    """Build an n-gon approximating a disc, in normalized YOLO coords.
 
-    center_local = mathutils.Vector((
-        0.5 * (mins[0] + maxs[0]),
-        0.5 * (mins[1] + maxs[1]),
-        0.5 * (mins[2] + maxs[2]),
-    ))
-    center_world = grid_obj.matrix_world @ center_local
+    Clamped to [0, 1] so edge-adjacent pins still emit valid polygon labels.
+    """
+    rx = radius_px / float(res_x)
+    ry = radius_px / float(res_y)
+    pts = []
+    for i in range(n_sides):
+        theta = 2.0 * math.pi * i / n_sides
+        x = cx + rx * math.cos(theta)
+        y = cy + ry * math.sin(theta)
+        pts.append((max(0.0, min(1.0, x)), max(0.0, min(1.0, y))))
+    return pts
 
-    cam_obj = bpy.context.scene.camera
-    cam_pos = cam_obj.matrix_world.translation if cam_obj else (center_world + mathutils.Vector((0, 0, 1)))
-    to_cam = cam_pos - center_world
-    if to_cam.length < 1e-9:
-        to_cam = mathutils.Vector((0, 0, 1))
 
-    world_basis = grid_obj.matrix_world.to_3x3()
-    local_axes = [
-        mathutils.Vector((1, 0, 0)),
-        mathutils.Vector((0, 1, 0)),
-        mathutils.Vector((0, 0, 1)),
-    ]
+def build_pin_label_polygons(scene, cam, pin_world_positions, res_x, res_y):
+    """Project pin positions to image and emit per-pin disc polygon labels.
 
-    u_world = (world_basis @ local_axes[axis_u]).normalized()
-    v_world = (world_basis @ local_axes[axis_v]).normalized()
-    n_world = u_world.cross(v_world)
-    if n_world.length < 1e-9:
-        return []
-    n_world.normalize()
-
-    # Make the board normal face the camera for stable yaw/flips in solved mode.
-    if n_world.dot(to_cam) < 0:
-        v_world = -v_world
-        n_world = -n_world
-
-    print(
-        f"Solved layout board axes: u={axis_u} v={axis_v} n={axis_n} "
-        f"spans=({spans[0]:.3f},{spans[1]:.3f},{spans[2]:.3f})"
-    )
-    print(f"Solved layout grid object: {grid_obj.name}")
-
-    candidate_piece_names = []
-    base_rot_map = {}
-    meta_map = {}
-    for p_name in PIECE_NAMES:
-        obj = bpy.data.objects.get(p_name)
-        meta = solver_layout.get(p_name)
-        if not obj or not meta:
+    Returns a list of polygons (each a list of (x, y) tuples in [0,1]); pins
+    that project behind the camera or outside the frame are dropped.
+    """
+    polygons = []
+    for world_pt in pin_world_positions:
+        projected = _project_world_to_image_norm(scene, cam, world_pt)
+        if projected is None:
             continue
-        candidate_piece_names.append(p_name)
-        base_rot_map[p_name] = auto_scale_and_flatten(obj, target_size=DYNAMIC_PIECE_TARGET_SIZE)
-        meta_map[p_name] = meta
-
-    if not candidate_piece_names:
-        return []
-
-    local_n_world = (world_basis @ local_axes[axis_n]).normalized()
-
-    inset_candidates = [SOLVER_GRID_INSET_FRAC]
-    if SOLVED_GRID_AUTO_CALIBRATE:
-        cleaned = []
-        for x in SOLVED_GRID_INSET_CANDIDATES:
-            try:
-                v = float(x)
-            except Exception:
-                continue
-            if 0.0 <= v < 0.49:
-                cleaned.append(v)
-        if cleaned:
-            inset_candidates = cleaned
-
-    axis_orders = [(axis_u, axis_v)]
-    if SOLVED_GRID_AUTO_CALIBRATE:
-        axis_orders.append((axis_v, axis_u))
-
-    best = None
-
-    def _apply_candidate(cand_axis_u, cand_axis_v, inset_frac, flip_u, flip_v):
-        cu_world = (world_basis @ local_axes[cand_axis_u]).normalized()
-        cv_world = (world_basis @ local_axes[cand_axis_v]).normalized()
-        cn_world = cu_world.cross(cv_world)
-        if cn_world.length < 1e-9:
-            return None
-        cn_world.normalize()
-
-        if cn_world.dot(to_cam) < 0:
-            cv_world = -cv_world
-            cn_world = -cn_world
-
-        surface_n = maxs[axis_n] if local_n_world.dot(cn_world) >= 0 else mins[axis_n]
-
-        inset_u = spans[cand_axis_u] * inset_frac
-        inset_v = spans[cand_axis_v] * inset_frac
-
-        u0 = mins[cand_axis_u] + inset_u
-        u1 = maxs[cand_axis_u] - inset_u
-        v0 = mins[cand_axis_v] + inset_v
-        v1 = maxs[cand_axis_v] - inset_v
-        if u1 <= u0 or v1 <= v0:
-            u0, u1 = mins[cand_axis_u], maxs[cand_axis_u]
-            v0, v1 = mins[cand_axis_v], maxs[cand_axis_v]
-
-        if flip_u:
-            u0, u1 = u1, u0
-        if flip_v:
-            v0, v1 = v1, v0
-
-        board_basis = mathutils.Matrix((cu_world, cv_world, cn_world)).transposed()
-
-        transforms = {}
-
-        for p_name in candidate_piece_names:
-            meta = meta_map[p_name]
-            obj = bpy.data.objects.get(p_name)
-            if not obj:
-                return None
-
-            if "anchor_x" in meta and "anchor_y" in meta:
-                cx = float(meta["anchor_x"])
-                cy = float(meta["anchor_y"])
-            else:
-                cells_xy = meta.get("cells_xy", [])
-                if not cells_xy:
-                    return None
-                cx = sum(x for x, _ in cells_xy) / float(len(cells_xy))
-                cy = sum(y for _, y in cells_xy) / float(len(cells_xy))
-
-            u = (cx + 0.5) / BOARD_WIDTH
-            v = (cy + 0.5) / BOARD_HEIGHT
-
-            local_pos = [0.0, 0.0, 0.0]
-            local_pos[cand_axis_u] = u0 + u * (u1 - u0)
-            local_pos[cand_axis_v] = v0 + v * (v1 - v0)
-            local_pos[axis_n] = surface_n
-            world_pos = (grid_obj.matrix_world @ mathutils.Vector(local_pos)) + (cn_world * SOLVED_PIECE_Z_LIFT)
-
-            # Solver mirror uses x-reflection in board-plane space. Our render mirror
-            # path uses an X-axis 180 flip, which is equivalent to a y-reflection in
-            # plane, so mirrored states need a +2 quarter-turn correction.
-            render_steps = int(meta["rotation_steps"]) % 4
-            if meta["mirrored"]:
-                render_steps = (render_steps + 2) % 4
-
-            yaw_rot = mathutils.Euler((0, 0, render_steps * (math.pi / 2.0))).to_matrix()
-            if meta["mirrored"]:
-                flip_rot = mathutils.Euler((math.pi, 0, 0)).to_matrix()
-            else:
-                flip_rot = mathutils.Matrix.Identity(3)
-
-            piece_local_rot = yaw_rot @ flip_rot @ base_rot_map[p_name]
-            world_rot = board_basis @ piece_local_rot
-            transforms[p_name] = (world_pos, world_rot.to_euler())
-
-        for p_name, (world_pos, rot_euler) in transforms.items():
-            obj = bpy.data.objects.get(p_name)
-            obj.location = world_pos
-            obj.rotation_euler = rot_euler
-            obj.hide_render = False
-            obj.hide_viewport = False
-
-        bpy.context.view_layer.update()
-        scene = bpy.context.scene
-        cam = scene.camera
-        score, overlap_sum, spread = evaluate_current_solved_layout_score(scene, cam, candidate_piece_names)
-        return {
-            "score": score,
-            "overlap": overlap_sum,
-            "spread": spread,
-            "axis_u": cand_axis_u,
-            "axis_v": cand_axis_v,
-            "inset": inset_frac,
-            "flip_u": flip_u,
-            "flip_v": flip_v,
-            "transforms": transforms,
-        }
-
-    for cand_axis_u, cand_axis_v in axis_orders:
-        flip_options = [(False, False)]
-        if SOLVED_GRID_AUTO_CALIBRATE:
-            flip_options = [(False, False), (True, False), (False, True), (True, True)]
-
-        for inset_frac in inset_candidates:
-            for flip_u, flip_v in flip_options:
-                result = _apply_candidate(cand_axis_u, cand_axis_v, inset_frac, flip_u, flip_v)
-                if not result:
-                    continue
-                if best is None or result["score"] < best["score"]:
-                    best = result
-
-    if not best:
-        return []
-
-    for p_name in candidate_piece_names:
-        obj = bpy.data.objects.get(p_name)
-        world_pos, rot_euler = best["transforms"][p_name]
-        obj.location = world_pos
-        obj.rotation_euler = rot_euler
-        obj.hide_render = False
-        obj.hide_viewport = False
-
-    print(
-        "Solved layout calibration: "
-        f"axis=({best['axis_u']},{best['axis_v']}) inset={best['inset']:.3f} "
-        f"flip_u={best['flip_u']} flip_v={best['flip_v']} "
-        f"overlap={best['overlap']:.4f} spread={best['spread']:.4f}"
-    )
-
-    return list(candidate_piece_names)
-
-
-def place_solved_board_pieces(scene, cam, active_pieces, board_obj):
-    bounds = get_object_world_bounds(board_obj)
-    bw = bounds["max_x"] - bounds["min_x"]
-    bh = bounds["max_y"] - bounds["min_y"]
-    ix = bw * SOLVED_BOARD_INSET_FRAC
-    iy = bh * SOLVED_BOARD_INSET_FRAC
-    x_min = bounds["min_x"] + ix
-    x_max = bounds["max_x"] - ix
-    y_min = bounds["min_y"] + iy
-    y_max = bounds["max_y"] - iy
-    if x_max <= x_min or y_max <= y_min:
-        return []
-    z = bounds["max_z"] + SOLVED_PIECE_Z_LIFT
-    return place_active_pieces(scene, cam, active_pieces,
-                               (x_min, x_max), (y_min, y_max), z,
-                               SOLVED_MAX_TILT_DEGREES, SOLVED_EDGE_MARGIN,
-                               require_all=True,
-                               max_retries=MAX_PLACEMENT_RETRIES * 3,
-                               context_label="solved", allow_flip=False)
+        cx, cy = projected
+        polygons.append(_disc_polygon_norm(cx, cy, PIN_RENDER_RADIUS_PX, res_x, res_y))
+    return polygons
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # §7  GENERATION PLAN
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _compute_mode_counts(total):
-    solved_total = max(0, min(int(round(total * SOLVED_GRID_SCENE_RATIO)), total))
-    solved_partial = max(0, min(int(round(solved_total * PARTIAL_SOLVED_SCENE_RATIO_WITHIN_SOLVED)), solved_total))
-    solved_full = solved_total - solved_partial
-    return {
-        "total_count": total,
-        "random_count": total - solved_total,
-        "solved_total_count": solved_total,
-        "solved_full_count": solved_full,
-        "solved_partial_count": solved_partial,
-    }
+def _build_split_plan(split_name, split_total):
+    """Build a split plan consisting entirely of random-placement scenes.
 
-
-def _build_split_plan(split_name, split_total, partial_pool=None):
-    mc = _compute_mode_counts(split_total)
-    random_budget = mc["random_count"]
+    Solved-board modes were removed; their former allocation is redistributed
+    here into the `random` bucket so TOTAL_TRAIN_IMAGES / TOTAL_VAL_IMAGES
+    remain unchanged.
+    """
+    random_budget = split_total
     plan = []
 
     # One-piece quota
@@ -1243,7 +721,7 @@ def _build_split_plan(split_name, split_total, partial_pool=None):
         for _ in range(single_per):
             plan.append({"split": split_name, "mode": "random", "pieces": [piece]})
 
-    # Mixed piece-count buckets
+    # Mixed piece-count buckets fill the remainder of the random budget.
     remaining = random_budget - len(plan)
     buckets = list(range(2, len(PIECE_NAMES) + 1))
     if buckets and remaining > 0:
@@ -1259,32 +737,25 @@ def _build_split_plan(split_name, split_total, partial_pool=None):
             plan.append({"split": split_name, "mode": "random",
                          "pieces": [random.choice(PIECE_NAMES)]})
 
-    # Solved scenes
-    for _ in range(mc["solved_full_count"]):
-        plan.append({"split": split_name, "mode": "solved_full", "pieces": list(PIECE_NAMES)})
-    for _ in range(mc["solved_partial_count"]):
-        plan.append({"split": split_name, "mode": "solved_partial",
-                     "pieces": sample_partial_piece_ids(partial_pool)})
-
     random.shuffle(plan)
     if len(plan) != split_total:
         raise RuntimeError(f"Plan mismatch for '{split_name}': {len(plan)} != {split_total}")
 
-    stats = dict(mc)
-    stats["single_per_piece"] = single_per
+    stats = {
+        "total_count": split_total,
+        "random_count": split_total,
+        "single_per_piece": single_per,
+    }
     return plan, stats
 
 
-def build_generation_plan(partial_pool=None):
-    tp, ts = _build_split_plan("train", TOTAL_TRAIN_IMAGES, partial_pool)
-    vp, vs = _build_split_plan("val", TOTAL_VAL_IMAGES, partial_pool)
+def build_generation_plan():
+    tp, ts = _build_split_plan("train", TOTAL_TRAIN_IMAGES)
+    vp, vs = _build_split_plan("val", TOTAL_VAL_IMAGES)
     plan = tp + vp
     return plan, {
         "total_count": len(plan),
         "random_count": ts["random_count"] + vs["random_count"],
-        "solved_total_count": ts["solved_total_count"] + vs["solved_total_count"],
-        "solved_full_count": ts["solved_full_count"] + vs["solved_full_count"],
-        "solved_partial_count": ts["solved_partial_count"] + vs["solved_partial_count"],
         "split_stats": {"train": ts, "val": vs},
     }
 
@@ -1621,7 +1092,7 @@ def download_hdris_if_missing():
                 print(f"  Failed: {url}: {e}")
 
 
-def prepare_hdri_background(use_board, hdri_images, board_pose_mode="random", board_inner_rel=None):
+def prepare_hdri_background(use_board, hdri_images, board_inner_rel=None):
     scene = bpy.context.scene
     world = bpy.data.worlds.get("World")
     if not world:
@@ -1640,7 +1111,7 @@ def prepare_hdri_background(use_board, hdri_images, board_pose_mode="random", bo
         board.hide_render = not use_board
         board.hide_viewport = not use_board
         if use_board:
-            set_board_pose(board, pose_mode=board_pose_mode)
+            set_board_pose(board)
 
     # Keep board_inner hidden in RGB renders
     bi = bpy.data.objects.get(MANUAL_BOARD_INNER_OBJECT_NAME) if MANUAL_BOARD_INNER_OBJECT_NAME else None
@@ -1690,6 +1161,7 @@ def create_output_dirs_and_yaml():
             f.write(f"  {i}: {PIECE_COLORS[name][0]}\n")
         f.write(f"  {CLASS_BOARD}: board\n")
         f.write(f"  {CLASS_HINGE}: hinge\n")
+        f.write(f"  {CLASS_PIN}: pin\n")
     print(f"dataset.yaml written to {yaml_path}")
 
 
@@ -1756,169 +1228,38 @@ def generate_dataset():
     hide_all_pieces()
 
     board_ref = bpy.data.objects.get(BOARD_NAME)
-    reference_board_matrix = board_ref.matrix_world.copy() if board_ref else None
     board_inner_obj = bpy.data.objects.get(MANUAL_BOARD_INNER_OBJECT_NAME) if MANUAL_BOARD_INNER_OBJECT_NAME else None
     board_inner_rel = None
     if board_ref and board_inner_obj:
         board_inner_rel = capture_relative_transform(board_ref, board_inner_obj)
         print(f"Using manual inner-board label object: {MANUAL_BOARD_INNER_OBJECT_NAME}")
 
-    # Capture reference solved layout
-    reference_solved_layout = None
-    if USE_REFERENCE_SOLVED_LAYOUT:
-        reference_solved_layout = capture_reference_solved_layout(board_ref)
-        if reference_solved_layout:
-            print("Captured reference solved layout from scene.")
-        else:
-            print("WARNING: Reference solved layout unavailable.")
-
-    # Run solver for piece pool validation
-    solver_result = solve_noodles_full()
-    if not solver_result["solved"]:
-        raise RuntimeError("Solver failed — cannot generate solved scenes.")
-
-    solver_layout = build_solver_layout_metadata(solver_result)
-    if USE_SOLVER_LAYOUT_FOR_SOLVED:
-        if len(solver_layout) != len(PIECE_NAMES):
-            raise RuntimeError(
-                f"Solver layout metadata incomplete: {len(solver_layout)}/{len(PIECE_NAMES)} pieces."
-            )
-
-    solver_pool = [PIECE_NAMES[pid] for pid in sorted(solver_result["solution"].keys())
-                   if solver_result["solution"][pid] is not None]
-    if len(solver_pool) != len(PIECE_NAMES):
-        solver_pool = list(PIECE_NAMES)
-    print(f"Solver: solved={solver_result['solved']} states={solver_result['states']}")
-
     hdri_images = glob.glob(os.path.join(HDRI_DIR, "*.exr")) + glob.glob(os.path.join(HDRI_DIR, "*.hdr"))
-    plan, stats = build_generation_plan(solver_pool)
+    plan, stats = build_generation_plan()
 
     # Print plan summary
     ts = stats["split_stats"]["train"]
     vs = stats["split_stats"]["val"]
-    print(f"\nGeneration plan: {stats['total_count']} images")
-    print(f"  Random: {stats['random_count']}  Solved: {stats['solved_total_count']} "
-          f"(full={stats['solved_full_count']}, partial={stats['solved_partial_count']})")
+    print(f"\nGeneration plan: {stats['total_count']} images (all random placements)")
     print(f"  Train: {ts['total_count']} (random={ts['random_count']}, "
-          f"solved={ts['solved_total_count']}, single/piece={ts['single_per_piece']})")
+          f"single/piece={ts['single_per_piece']})")
     print(f"  Val:   {vs['total_count']} (random={vs['random_count']}, "
-          f"solved={vs['solved_total_count']}, single/piece={vs['single_per_piece']})")
-
-    solved_requested = 0
-    solved_success = 0
+          f"single/piece={vs['single_per_piece']})")
 
     for i, sample in enumerate(plan):
         split = sample["split"]
         mode = sample["mode"]
         active_pieces = list(sample["pieces"])
-        use_board = False
 
-        # ── SOLVED MODE ──
-        if mode in ("solved_full", "solved_partial"):
-            solved_requested += 1
-            use_board = True
-            board = bpy.data.objects.get(BOARD_NAME)
-            target_visible = list(PIECE_NAMES) if mode == "solved_full" else list(dict.fromkeys(active_pieces))
-
-            if USE_SOLVER_LAYOUT_FOR_SOLVED:
-                if not solver_layout:
-                    raise RuntimeError("Solved scenes need a valid solver-derived layout.")
-            elif not reference_solved_layout:
-                raise RuntimeError("Solved scenes need a valid reference layout in the .blend scene.")
-
-            def _attempt_solved(margin, attempts, fixed_pose=False):
-                for _ in range(attempts):
-                    prepare_hdri_background(True, hdri_images, board_pose_mode="solved",
-                                            board_inner_rel=board_inner_rel)
-                    if fixed_pose and board and reference_board_matrix is not None:
-                        board.matrix_world = reference_board_matrix.copy()
-                        if board_inner_obj and board_inner_rel is not None:
-                            apply_relative_transform(board, board_inner_obj, board_inner_rel)
-                        bpy.context.view_layer.update()
-
-                    if USE_SOLVER_LAYOUT_FOR_SOLVED:
-                        placed = apply_solver_solved_layout(board, solver_layout)
-                    else:
-                        placed = apply_reference_solved_layout(board, reference_solved_layout)
-
-                    if len(placed) != len(PIECE_NAMES):
-                        continue
-                    show_only_piece_set(target_visible)
-                    bpy.context.view_layer.update()
-                    if all_pieces_inside_frame(scene, cam, target_visible, margin):
-                        _, overlap_sum, spread = evaluate_current_solved_layout_score(scene, cam, target_visible)
-                        if overlap_sum > SOLVED_ACCEPT_MAX_OVERLAP_SUM:
-                            print(
-                                f"  solved reject: overlap_sum={overlap_sum:.4f} "
-                                f"(limit={SOLVED_ACCEPT_MAX_OVERLAP_SUM:.4f}) spread={spread:.4f}"
-                            )
-                            continue
-                        return True
-                return False
-
-            solved_ok = _attempt_solved(SOLVED_EDGE_MARGIN, SOLVED_LAYOUT_MAX_ATTEMPTS)
-            if not solved_ok:
-                print(f"  Image {i}: strict framing failed, trying relaxed …")
-                solved_ok = _attempt_solved(SOLVED_EDGE_MARGIN_RELAXED, SOLVED_LAYOUT_MAX_ATTEMPTS)
-            if not solved_ok and reference_board_matrix is not None:
-                print(f"  Image {i}: relaxed failed, trying fixed pose …")
-                solved_ok = _attempt_solved(0.0, SOLVED_STATIC_FALLBACK_ATTEMPTS, fixed_pose=True)
-            if solved_ok:
-                active_pieces = target_visible
-                solved_success += 1
-            else:
-                # Best-effort fallback
-                print(f"  WARN Image {i}: all solved attempts failed — best-effort fallback.")
-                prepare_hdri_background(True, hdri_images, board_pose_mode="solved",
-                                        board_inner_rel=board_inner_rel)
-                if board and reference_board_matrix is not None:
-                    board.matrix_world = reference_board_matrix.copy()
-                    if board_inner_obj and board_inner_rel is not None:
-                        apply_relative_transform(board, board_inner_obj, board_inner_rel)
-                    bpy.context.view_layer.update()
-
-                if USE_SOLVER_LAYOUT_FOR_SOLVED:
-                    placed = apply_solver_solved_layout(board, solver_layout)
-                else:
-                    placed = apply_reference_solved_layout(board, reference_solved_layout)
-
-                if len(placed) == len(PIECE_NAMES):
-                    show_only_piece_set(target_visible)
-                    bpy.context.view_layer.update()
-                    _, overlap_sum, spread = evaluate_current_solved_layout_score(scene, cam, target_visible)
-                    if overlap_sum <= SOLVED_ACCEPT_MAX_OVERLAP_SUM:
-                        active_pieces = target_visible
-                    else:
-                        print(
-                            f"  WARN Image {i}: solved fallback overlap too high "
-                            f"({overlap_sum:.4f} > {SOLVED_ACCEPT_MAX_OVERLAP_SUM:.4f}), using random fallback."
-                        )
-                        active_pieces = place_active_pieces(
-                            scene, cam, list(target_visible),
-                            (-PLACEMENT_RADIUS, PLACEMENT_RADIUS),
-                            (-PLACEMENT_RADIUS, PLACEMENT_RADIUS),
-                            RANDOM_PIECE_Z, MAX_TILT_DEGREES, RANDOM_EDGE_MARGIN,
-                            context_label="solved-fallback-random")
-                else:
-                    print(f"  WARN Image {i}: placement incomplete, falling back to random.")
-                    active_pieces = place_active_pieces(
-                        scene, cam, list(target_visible),
-                        (-PLACEMENT_RADIUS, PLACEMENT_RADIUS),
-                        (-PLACEMENT_RADIUS, PLACEMENT_RADIUS),
-                        RANDOM_PIECE_Z, MAX_TILT_DEGREES, RANDOM_EDGE_MARGIN,
-                        context_label="solved-fallback-random")
-
-        # ── RANDOM MODE ──
-        else:
-            use_board = random.random() < BOARD_VISIBILITY_PROB
-            prepare_hdri_background(use_board, hdri_images, board_pose_mode="random",
-                                    board_inner_rel=board_inner_rel)
-            active_pieces = place_active_pieces(
-                scene, cam, active_pieces,
-                (-PLACEMENT_RADIUS, PLACEMENT_RADIUS),
-                (-PLACEMENT_RADIUS, PLACEMENT_RADIUS),
-                RANDOM_PIECE_Z, MAX_TILT_DEGREES, RANDOM_EDGE_MARGIN,
-                context_label="random")
+        # Only random mode remains; solved-board modes were dropped.
+        use_board = random.random() < BOARD_VISIBILITY_PROB
+        prepare_hdri_background(use_board, hdri_images, board_inner_rel=board_inner_rel)
+        active_pieces = place_active_pieces(
+            scene, cam, active_pieces,
+            (-PLACEMENT_RADIUS, PLACEMENT_RADIUS),
+            (-PLACEMENT_RADIUS, PLACEMENT_RADIUS),
+            RANDOM_PIECE_Z, MAX_TILT_DEGREES, RANDOM_EDGE_MARGIN,
+            context_label="random")
 
         scene.frame_set(i)
 
@@ -1941,8 +1282,12 @@ def generate_dataset():
         # 3. Board polygon mask (class 11) — rendered AFTER the RGB image
         #    so its Workbench pass can't contaminate the final render.
         board_poly = None
+        pin_polys = []
         if use_board:
             board_poly = render_board_mask(scene, RES_X, RES_Y)
+            pin_world = compute_pin_world_positions(board_inner_obj)
+            if pin_world:
+                pin_polys = build_pin_label_polygons(scene, cam, pin_world, RES_X, RES_Y)
 
         # 4. Write YOLO label file
         lbl_path = os.path.join(LABELS_DIR, split, f"{i:06d}.txt")
@@ -1957,11 +1302,12 @@ def generate_dataset():
                 coords = " ".join(f"{x:.6f} {y:.6f}" for x, y in board_poly)
                 f.write(f"{CLASS_BOARD} {coords}\n")
             # Class 12 (hinge) is NOT labelled in synthetic data.
+            for pin_poly in pin_polys:
+                coords = " ".join(f"{x:.6f} {y:.6f}" for x, y in pin_poly)
+                f.write(f"{CLASS_PIN} {coords}\n")
 
         print(f"[{i + 1}/{TOTAL_IMAGES}] ({mode}) {split}/{img_filename}")
 
-    if solved_requested > 0:
-        print(f"\nSolved-board success rate: {solved_success}/{solved_requested}")
     print("Dataset generation complete.")
 
 

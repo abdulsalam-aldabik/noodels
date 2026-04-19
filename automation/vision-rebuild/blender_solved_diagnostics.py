@@ -12,11 +12,15 @@ Output:
 """
 
 import bpy
+import bpy_extras
 import glob
 import importlib.util
 import json
+import math
 import os
 from datetime import datetime
+
+import mathutils
 
 
 def _load_generator_module(repo_root):
@@ -80,6 +84,76 @@ def _pair_overlap_stats(mod, scene, cam, piece_names):
         "max_pair_overlap": max_pair,
         "overlap_pair_count": pair_count,
     }
+
+
+def _project_to_image(scene, cam, world_vec):
+    co2d = bpy_extras.object_utils.world_to_camera_view(scene, cam, world_vec)
+    return {"x": float(co2d.x), "y": float(co2d.y), "depth": float(co2d.z)}
+
+
+def _compute_overlay_points(mod, scene, cam, solver_layout):
+    """Collect projected image coords for pins, per-piece expected cells, and actual centers.
+
+    Grid coords: cell (col, row) center is at (col+0.5, row+0.5); pin between cells
+    has gx = avg_col + 0.5, gy = avg_row + 0.5. LAST_SOLVED_GRID_TO_WORLD maps
+    (gx, gy) to world-space Vector.
+    """
+    g2w = getattr(mod, "LAST_SOLVED_GRID_TO_WORLD", None)
+    if g2w is None:
+        return None
+
+    pins = []
+    for i in range(len(mod.POSITIONS_AROUND_PINS)):
+        avg_xy = mod._pin_board_xy(i)
+        if avg_xy is None:
+            continue
+        avg_col, avg_row = avg_xy
+        world = g2w(avg_col + 0.5, avg_row + 0.5)
+        proj = _project_to_image(scene, cam, world)
+        pins.append({
+            "pin_index": i,
+            "cell_avg": [float(avg_col), float(avg_row)],
+            **proj,
+        })
+
+    pieces = {}
+    for pname, meta in solver_layout.items():
+        cells_xy = meta.get("cells_xy") or []
+        expected_cells = []
+        for (col, row) in cells_xy:
+            world = g2w(float(col) + 0.5, float(row) + 0.5)
+            proj = _project_to_image(scene, cam, world)
+            expected_cells.append({"cell": [int(col), int(row)], **proj})
+
+        expected_anchor = None
+        if cells_xy:
+            xs = [c for c, _ in cells_xy]
+            ys = [r for _, r in cells_xy]
+            cx = 0.5 * (min(xs) + max(xs)) + 0.5
+            cy = 0.5 * (min(ys) + max(ys)) + 0.5
+            world = g2w(cx, cy)
+            expected_anchor = _project_to_image(scene, cam, world)
+
+        obj = bpy.data.objects.get(pname)
+        actual_center = None
+        if obj:
+            local_center = mathutils.Vector((0.0, 0.0, 0.0))
+            for v in obj.bound_box:
+                local_center += mathutils.Vector(v)
+            local_center /= 8.0
+            world_center = obj.matrix_world @ local_center
+            actual_center = _project_to_image(scene, cam, world_center)
+
+        pieces[pname] = {
+            "expected_cells": expected_cells,
+            "expected_anchor": expected_anchor,
+            "actual_center": actual_center,
+            "rotation_steps": int(meta.get("rotation_steps", 0)),
+            "mirrored": bool(meta.get("mirrored", False)),
+            "orientation_index": int(meta.get("orientation_index", 0)),
+        }
+
+    return {"pins": pins, "pieces": pieces}
 
 
 def _serialize_piece_state(mod, scene, cam, piece_names):
@@ -204,6 +278,8 @@ def main():
             and overlap_sum <= mod.SOLVED_ACCEPT_MAX_OVERLAP_SUM
         )
 
+        overlay_points = _compute_overlay_points(mod, scene, cam, solver_layout)
+
         attempts.append(
             {
                 "attempt": i,
@@ -216,6 +292,8 @@ def main():
                 "pair_overlap": pair_stats,
                 "accepted_by_current_gate": bool(accepted_gate),
                 "piece_state": _serialize_piece_state(mod, scene, cam, mod.PIECE_NAMES),
+                "overlay_points": overlay_points,
+                "image_size": [int(scene.render.resolution_x), int(scene.render.resolution_y)],
             }
         )
 
