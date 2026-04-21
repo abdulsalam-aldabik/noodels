@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState } from "react";
 
 import { ScanPipeline, type MapperVersion } from "../pipeline/ScanPipeline";
-import type { ScanResult } from "../pipeline/types";
+import type { LocalizationVersion, ScanResult } from "../pipeline/types";
 
 import "../styles/app.css";
 
@@ -43,13 +43,14 @@ async function loadFile(file: File): Promise<HTMLImageElement> {
 }
 
 export default function ScanLabPage() {
-  const pipelinesRef = useRef<Partial<Record<MapperVersion, ScanPipeline>>>({});
+  const pipelinesRef = useRef<Partial<Record<string, ScanPipeline>>>({});
   const [loadingModel, setLoadingModel] = useState(false);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<ScanResult | null>(null);
   const [tab, setTab] = useState<Tab>("mapped");
-  const [mapperVersion, setMapperVersion] = useState<MapperVersion>("v1");
+  const [mapperVersion, setMapperVersion] = useState<MapperVersion>("v2");
+  const [locVersion, setLocVersion] = useState<LocalizationVersion>("corners");
 
   const artifactUrls = useMemo(() => {
     if (!result) return null;
@@ -63,17 +64,16 @@ export default function ScanLabPage() {
     };
   }, [result]);
 
-  async function ensurePipeline(version: MapperVersion): Promise<ScanPipeline> {
-    const existing = pipelinesRef.current[version];
-    if (existing) {
-      return existing;
-    }
+  async function ensurePipeline(mapper: MapperVersion, loc: LocalizationVersion): Promise<ScanPipeline> {
+    const key = `${mapper}+${loc}`;
+    const existing = pipelinesRef.current[key];
+    if (existing) return existing;
 
     setLoadingModel(true);
     try {
-      const pipeline = new ScanPipeline({ mapperVersion: version });
+      const pipeline = new ScanPipeline({ mapperVersion: mapper, localizationVersion: loc });
       await pipeline.ensureLoaded();
-      pipelinesRef.current[version] = pipeline;
+      pipelinesRef.current[key] = pipeline;
       return pipeline;
     } finally {
       setLoadingModel(false);
@@ -87,11 +87,18 @@ export default function ScanLabPage() {
     setError(null);
   }
 
+  function onLocVersionChange(version: LocalizationVersion) {
+    if (version === locVersion) return;
+    setLocVersion(version);
+    setResult(null);
+    setError(null);
+  }
+
   async function runOnImage(image: HTMLImageElement) {
     setRunning(true);
     setError(null);
     try {
-      const pipeline = await ensurePipeline(mapperVersion);
+      const pipeline = await ensurePipeline(mapperVersion, locVersion);
       const r = await pipeline.run(image);
       setResult(r);
     } catch (e) {
