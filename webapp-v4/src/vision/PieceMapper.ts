@@ -3,6 +3,7 @@ import {
   BOARD_CLASS_ID,
   CLASS_NAMES,
   HINGE_CLASS_ID,
+  PIN_CLASS_ID,
   type RawDetection,
 } from "../inference/types";
 import { PIECE_ASSETS, type PieceKey } from "../pieces/assets";
@@ -151,7 +152,7 @@ export function mapPiecesToBoardState(
   for (let detectionIndex = 0; detectionIndex < detections.length; detectionIndex++) {
     const detection = detections[detectionIndex];
 
-    if (detection.classId === BOARD_CLASS_ID || detection.classId === HINGE_CLASS_ID) {
+    if (detection.classId === BOARD_CLASS_ID || detection.classId === HINGE_CLASS_ID || detection.classId === PIN_CLASS_ID) {
       continue;
     }
 

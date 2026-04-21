@@ -26,10 +26,10 @@ import {
 } from "./placementIndex";
 import { warpMaskToCells } from "./maskToBoardGrid";
 
-export const COVERAGE_THRESHOLD = 0.15;
+export const COVERAGE_THRESHOLD = 0.10;
 export const MIN_CELLS = 3;
 export const AMBIGUITY_MARGIN = 0.08;
-export const MIN_ACCEPT_IOU = 0.4;
+export const MIN_ACCEPT_IOU = 0.2;
 export const PIECE_MAPPER_V2_VERSION = "v2.0";
 
 const HOMOGRAPHY_CONDITION_LIMIT = 1e6;
@@ -74,7 +74,14 @@ export function mapPiecesToBoardStateV2(
       unassignedDetections.push(det);
       continue;
     }
-    const placements = index.get(det.classId) ?? [];
+    // Compare mask geometry against EVERY piece class and orientation.
+    // This correctly bypasses YOLO's class predictions (which fail on real data)
+    // and identifies the piece solely by its physical shape wrapped on the grid.
+    const placements: CanonicalPlacement[] = [];
+    for (let c = 0; c < PIECE_CLASS_COUNT; c++) {
+      placements.push(...(index.get(c) ?? []));
+    }
+
     const scored: ScoredCandidate[] = [];
     for (const pl of placements) {
       const iou = cellSetIoU(warp.rowBitmap, pl.rowBitmap);
@@ -158,9 +165,8 @@ export function mapPiecesToBoardStateV2(
     }));
 
     const placement: PiecePlacement = {
-      classId: item.detection.classId,
-      className:
-        CLASS_NAMES[item.detection.classId] ?? item.detection.className,
+      classId: chosen.placement.classId,
+      className: CLASS_NAMES[chosen.placement.classId],
       cell: {
         row: chosen.placement.topLeftCell.row,
         col: chosen.placement.topLeftCell.col,

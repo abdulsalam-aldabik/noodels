@@ -50,7 +50,7 @@ export default function ScanLabPage() {
   const [result, setResult] = useState<ScanResult | null>(null);
   const [tab, setTab] = useState<Tab>("mapped");
   const [mapperVersion, setMapperVersion] = useState<MapperVersion>("v2");
-  const [locVersion, setLocVersion] = useState<LocalizationVersion>("corners");
+  const [locVersion, setLocVersion] = useState<LocalizationVersion>("pins");
 
   const artifactUrls = useMemo(() => {
     if (!result) return null;
@@ -158,6 +158,22 @@ export default function ScanLabPage() {
                 {version.toUpperCase()}
               </button>
             ))}
+
+            <span style={{ marginLeft: 16 }} />
+            <strong>Localization:</strong>
+            {(["corners", "pins"] as const).map((version) => (
+              <button
+                key={version}
+                onClick={() => onLocVersionChange(version)}
+                disabled={running || loadingModel}
+                style={{
+                  fontWeight: locVersion === version ? 700 : 400,
+                  textDecoration: locVersion === version ? "underline" : "none",
+                }}
+              >
+                {version.toUpperCase()}
+              </button>
+            ))}
           </div>
 
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
@@ -212,9 +228,16 @@ export default function ScanLabPage() {
             <ul style={{ fontSize: 12, lineHeight: 1.5 }}>
               <li>mapper: <code>{result.telemetry.mapping.mapperVersion}</code></li>
               <li>status: <code>{result.status}</code></li>
+              <li>localization: <code>{result.telemetry.localization.version}</code></li>
               <li>board corners source: <code>{result.boardRef.cornerSource}</code></li>
               <li>corner score: <code>{result.boardRef.cornerScore.toFixed(3)}</code></li>
-              <li>hinge found: <code>{String(result.boardRef.hingeFound)}</code></li>
+              {result.telemetry.localization.pin && (
+                <>
+                  <li>pin status: <code>{result.telemetry.localization.pin.status}</code></li>
+                  <li>pins detected: <code>{result.telemetry.localization.pin.detectedPinCount}</code> · matched: <code>{result.telemetry.localization.pin.matchedPinCount}</code></li>
+                  <li>pin residual mean: <code>{result.telemetry.localization.pin.residualMeanCells.toFixed(3)}</code> · max: <code>{result.telemetry.localization.pin.residualMaxCells.toFixed(3)}</code></li>
+                </>
+              )}
               <li>
                 cellSpacingPx:{" "}
                 <code>{result.rectified?.cellSpacingPx.toFixed(3) ?? "—"}</code>

@@ -59,8 +59,8 @@ export class ScanPipeline {
     this.runner = options.runner ?? new InferenceRunner();
     this.canvasSize = options.rectifiedCanvasSize ?? DEFAULT_RECTIFIED_CANVAS;
     this.emitArtifacts = options.emitArtifacts ?? true;
-    this.mapperVersion = options.mapperVersion ?? "v1";
-    this.localizationVersion = options.localizationVersion ?? "corners";
+    this.mapperVersion = options.mapperVersion ?? "v2";
+    this.localizationVersion = options.localizationVersion ?? "pins";
   }
 
   async ensureLoaded(): Promise<void> {
@@ -76,7 +76,9 @@ export class ScanPipeline {
     // Pin-path localization refinement (optional).
     let pinRef: BoardRefPins | undefined;
     if (this.localizationVersion === "pins") {
-      const pins = locatePins(inference.detections);
+      const pins = locatePins(inference.detections, {
+        boardCorners: cornerRef.status !== "failed" ? cornerRef.corners : undefined,
+      });
       pinRef = locateBoardPins(pins, cornerRef);
     }
 
@@ -106,6 +108,11 @@ export class ScanPipeline {
     } else {
       const { frame, canvas } = rectify(image, effectiveRef, {
         canvasSize: this.canvasSize,
+        // When pin path produced a valid homography, use it directly for
+        // rectification. This avoids the lossy corners→H→corners→H round-trip.
+        precomputedImgToBoard: usingPinHomography
+          ? pinRef!.pinHomography!.forward
+          : undefined,
       });
       rectifiedFrame = frame;
       rectifiedCanvas = canvas;

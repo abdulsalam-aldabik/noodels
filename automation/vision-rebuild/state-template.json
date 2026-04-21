@@ -1,0 +1,43 @@
+{
+  "phase": "phase-2",
+  "status": "in-progress",
+  "lastUpdated": "2026-04-17T16:31:13",
+  "currentObjective": "Diagnose and hard-gate solver-based solved scene placement quality in blender_yolo_generator_v2.py so solved scenes are non-overlapping and orientation-correct.",
+  "completed": [
+    "Mapped solved placement flow and candidate auto-calibration logic in blender_yolo_generator_v2.py.",
+    "Confirmed acceptance gap: solved attempts currently pass on frame-fit only; overlap/orientation are not hard gates.",
+    "Defined instrumentation metrics and acceptance gates in docs/prd/vision-rebuild-prd.md section 12."
+  ],
+  "openRisks": [
+    "Projected overlap score may not capture true 3D mesh intersections.",
+    "Mirror transform semantics may not match solver mirrored states for all pieces.",
+    "Board-grid extent mapping can remain biased if board bbox is not equivalent to playable grid footprint."
+  ],
+  "nextActions": [
+    "Add solved diagnostics JSON/JSONL output per sample with candidate-level and accepted-layout metrics.",
+    "Enforce hard overlap gate in solved acceptance loop before solved_ok is set true.",
+    "Add 3D collision check and orientation mismatch metrics for solved candidate validation.",
+    "Run solved-only validation batch and verify gates A-G defined in PRD section 12.3."
+  ],
+  "validation": {
+    "build": "not-run",
+    "tests": "not-run",
+    "manualChecks": [
+      "Gate A completeness",
+      "Gate B framing",
+      "Gate C non-overlap 2D",
+      "Gate D non-intersection 3D",
+      "Gate E orientation correctness",
+      "Gate F solver consistency IoU",
+      "Gate G batch stability"
+    ]
+  },
+  "handoff": {
+    "readyForCopilot": false,
+    "filesPrepared": [
+      "docs/prd/vision-rebuild-prd.md",
+      "automation/vision-rebuild/state-template.json",
+      "logs/agent-work-log.md"
+    ]
+  }
+}

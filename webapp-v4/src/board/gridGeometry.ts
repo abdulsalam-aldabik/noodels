@@ -6,12 +6,13 @@ export const GRID = 14;
  * Edge-based destination corners for the rectification homography.
  * Cells occupy [col, col+1) × [row, row+1). The outer edge of cell (0,0) is
  * at (-0.5, -0.5); the outer edge of cell (13,13) is at (13.5, 13.5).
+ * We add 1 cell of margin on each side to include the board's physical frame.
  * This is the SINGLE source of truth — every homography, warp, and overlay
  * must reference these values. No inline math elsewhere.
  */
-export const BOARD_EDGE_MIN = -0.5;
-export const BOARD_EDGE_MAX = GRID - 0.5; // 13.5
-export const BOARD_EDGE_SPAN = BOARD_EDGE_MAX - BOARD_EDGE_MIN; // 14
+export const BOARD_EDGE_MIN = -1.5;
+export const BOARD_EDGE_MAX = GRID - 0.5 + 1; // 14.5
+export const BOARD_EDGE_SPAN = BOARD_EDGE_MAX - BOARD_EDGE_MIN; // 16
 
 export const BOARD_EDGE_CORNERS = {
   topLeft: { x: BOARD_EDGE_MIN, y: BOARD_EDGE_MIN },
@@ -22,7 +23,7 @@ export const BOARD_EDGE_CORNERS = {
 
 /** Expected pixel spacing between adjacent cell centers in a rectified canvas. */
 export function expectedCellSpacingPx(canvasSizePx: number): number {
-  return canvasSizePx / GRID;
+  return canvasSizePx / BOARD_EDGE_SPAN;
 }
 
 /**

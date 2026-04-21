@@ -44,6 +44,9 @@ export interface LocatePinsOptions {
   minScore?: number;
   /** Upper cap on number of pins returned, kept to comfortably exceed 21 + noise. */
   maxPins?: number;
+  /** Board corners [TL, TR, BR, BL] in image pixels. If provided, pins outside this
+   *  quadrilateral are rejected to avoid false positives from outside the board. */
+  boardCorners?: [{ x: number; y: number }, { x: number; y: number }, { x: number; y: number }, { x: number; y: number }];
 }
 
 export function locatePins(
@@ -52,6 +55,7 @@ export function locatePins(
 ): PinDetection[] {
   const minScore = options.minScore ?? 0.25;
   const maxPins = options.maxPins ?? 64;
+  const boardQuad = options.boardCorners;
 
   const out: PinDetection[] = [];
   for (let i = 0; i < detections.length; i++) {
@@ -72,6 +76,12 @@ export function locatePins(
       cy = d.bbox.y + d.bbox.height / 2;
       areaPx = d.bbox.width * d.bbox.height;
     }
+
+    // Filter: reject pins outside the board polygon (with margin)
+    if (boardQuad && !isInsideQuadWithMargin(cx, cy, boardQuad, 0.1)) {
+      continue;
+    }
+
     const radiusPx = Math.sqrt(Math.max(areaPx, 1) / Math.PI);
 
     out.push({
@@ -85,4 +95,37 @@ export function locatePins(
   out.sort((a, b) => b.score - a.score);
   if (out.length > maxPins) out.length = maxPins;
   return out;
+}
+
+/**
+ * Check if a point is inside a quadrilateral with a margin.
+ * margin is a fraction of the quad's size added as padding (e.g. 0.1 = 10%).
+ * Works regardless of CW/CCW winding order.
+ */
+function isInsideQuadWithMargin(
+  px: number, py: number,
+  quad: [{ x: number; y: number }, { x: number; y: number }, { x: number; y: number }, { x: number; y: number }],
+  margin: number,
+): boolean {
+  // Expand the quad outward by margin
+  let cx = 0, cy = 0;
+  for (const p of quad) { cx += p.x; cy += p.y; }
+  cx /= 4; cy /= 4;
+
+  const expanded = quad.map(p => ({
+    x: p.x + (p.x - cx) * margin,
+    y: p.y + (p.y - cy) * margin,
+  }));
+
+  // Ray casting point-in-polygon (works for any winding)
+  let inside = false;
+  for (let i = 0, j = 3; i < 4; j = i++) {
+    const ei = expanded[i];
+    const ej = expanded[j];
+    if ((ei.y > py) !== (ej.y > py) &&
+        px < (ej.x - ei.x) * (py - ei.y) / (ej.y - ei.y) + ei.x) {
+      inside = !inside;
+    }
+  }
+  return inside;
 }

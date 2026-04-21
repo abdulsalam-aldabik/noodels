@@ -2,6 +2,7 @@ import type { InferenceResult, Point2D } from "../inference/types";
 import { BOARD_CLASS_ID, HINGE_CLASS_ID } from "../inference/types";
 import {
   BOARD_EDGE_MIN,
+  BOARD_EDGE_SPAN,
   GRID,
   boardToCanvas,
   computePinBoardPoints,
@@ -235,7 +236,7 @@ export async function renderMappedArtifact(
   ctx.drawImage(rectifiedCanvas, 0, 0);
 
   const index = getPlacementIndex();
-  const cellSize = w / GRID;
+  const cellSize = w / BOARD_EDGE_SPAN;
 
   for (const pl of boardState.placements) {
     const color = CLASS_COLORS[pl.classId % CLASS_COLORS.length];
@@ -298,15 +299,15 @@ export async function renderMappedArtifact(
   ctx.strokeStyle = "rgba(255,255,255,0.2)";
   ctx.lineWidth = 1;
   for (let i = 0; i <= GRID; i++) {
-    const boardCoord = BOARD_EDGE_MIN + i;
-    const a = boardToCanvas(boardCoord, BOARD_EDGE_MIN, w);
-    const b = boardToCanvas(boardCoord, BOARD_EDGE_MIN + GRID, w);
+    const boardCoord = -0.5 + i;
+    const a = boardToCanvas(boardCoord, -0.5, w);
+    const b = boardToCanvas(boardCoord, GRID - 0.5, w);
     ctx.beginPath();
     ctx.moveTo(a.x, a.y);
     ctx.lineTo(b.x, b.y);
     ctx.stroke();
-    const c = boardToCanvas(BOARD_EDGE_MIN, boardCoord, w);
-    const d = boardToCanvas(BOARD_EDGE_MIN + GRID, boardCoord, w);
+    const c = boardToCanvas(-0.5, boardCoord, w);
+    const d = boardToCanvas(GRID - 0.5, boardCoord, w);
     ctx.beginPath();
     ctx.moveTo(c.x, c.y);
     ctx.lineTo(d.x, d.y);

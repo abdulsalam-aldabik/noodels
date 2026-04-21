@@ -1,6 +1,7 @@
 import {
   BOARD_EDGE_MAX,
   BOARD_EDGE_MIN,
+  BOARD_EDGE_SPAN,
   boardToCanvas,
   computePinBoardPoints,
   expectedCellSpacingPx,
@@ -8,7 +9,7 @@ import {
 import type { Point2D } from "../inference/types";
 import type { BoardRef, Homography, RectifiedFrame } from "./types";
 
-export const DEFAULT_RECTIFIED_CANVAS = 560; // 560 / 14 = 40 px per cell
+export const DEFAULT_RECTIFIED_CANVAS = 640; // 640 / 16 = 40 px per cell
 
 /**
  * Solve H mapping src[i] → dst[i] for four pairs using the normalized DLT
@@ -106,6 +107,10 @@ function frobeniusNorm(m: number[]): number {
 
 export interface RectifyOptions {
   canvasSize?: number;
+  /** If provided, use this image→board homography directly instead of
+   *  deriving one from the BoardRef corners. Used by the pin-anchored path
+   *  to avoid the lossy corners round-trip. */
+  precomputedImgToBoard?: number[];
 }
 
 export interface RectifyOutput {
@@ -117,6 +122,10 @@ export interface RectifyOutput {
  * Warp the source image onto a canvasSize × canvasSize canvas such that the
  * four BoardRef corners map to the edge corners of the canonical 14×14 grid.
  * Uses backward mapping with bilinear sampling.
+ *
+ * When `options.precomputedImgToBoard` is set, that homography is used directly
+ * (bypassing the corner-based solve), which gives much better results when the
+ * homography was fit from 21 pin correspondences.
  */
 export function rectify(
   source: HTMLImageElement | HTMLCanvasElement | ImageBitmap,
@@ -133,8 +142,20 @@ export function rectify(
     boardToCanvas(BOARD_EDGE_MIN, BOARD_EDGE_MAX, canvasSize),
   ];
 
-  const Himg2canvas = computeHomography4(boardRef.corners, dstCorners);
-  const Hcanvas2img = invert3x3(Himg2canvas);
+  let Himg2canvas: number[];
+  let Hcanvas2img: number[];
+
+  if (options.precomputedImgToBoard) {
+    // Pin path: compose the precomputed image→board homography with
+    // the board→canvas transform to get image→canvas directly.
+    const s = canvasSize / BOARD_EDGE_SPAN;
+    const Cboard2canvas = [s, 0, -BOARD_EDGE_MIN * s, 0, s, -BOARD_EDGE_MIN * s, 0, 0, 1];
+    Himg2canvas = multiply3x3(Cboard2canvas, options.precomputedImgToBoard);
+    Hcanvas2img = invert3x3(Himg2canvas);
+  } else {
+    Himg2canvas = computeHomography4(boardRef.corners, dstCorners);
+    Hcanvas2img = invert3x3(Himg2canvas);
+  }
 
   // Read the source image onto an intermediate canvas for sampling.
   const srcW =
@@ -206,7 +227,7 @@ export function rectify(
   //   C = [[1/s, 0, MIN], [0, 1/s, MIN], [0, 0, 1]]
   // Inverse:  image px ← board units via Hcanvas2img * C^{-1}.
   //   C^{-1} = [[s, 0, -MIN*s], [0, s, -MIN*s], [0, 0, 1]]
-  const s = canvasSize / 14;
+  const s = canvasSize / BOARD_EDGE_SPAN;
   const C = [1 / s, 0, BOARD_EDGE_MIN, 0, 1 / s, BOARD_EDGE_MIN, 0, 0, 1];
   const Cinv = [s, 0, -BOARD_EDGE_MIN * s, 0, s, -BOARD_EDGE_MIN * s, 0, 0, 1];
   const forward = multiply3x3(C, Himg2canvas);

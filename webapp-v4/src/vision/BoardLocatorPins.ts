@@ -22,6 +22,7 @@ import {
   BOARD_EDGE_MAX,
   BOARD_EDGE_MIN,
   computePinBoardPoints,
+  type PinBoardPoint,
 } from "../board/gridGeometry";
 import type { Point2D } from "../inference/types";
 import { applyHomography, computeHomography4, invert3x3 } from "./Rectifier";
@@ -34,12 +35,14 @@ import type {
   PinLocalizationStatus,
 } from "./types";
 
-/** Greedy nearest-neighbor acceptance radius, in board-space cell units. */
-const ASSIGNMENT_RADIUS_CELLS = 0.7;
+/** Greedy nearest-neighbor acceptance radius, in board-space cell units.
+ *  Set wider than ideal because the corner-seed homography can be off by ~1 cell.
+ *  The DLT refit + inlier pass tightens precision after the initial match. */
+const ASSIGNMENT_RADIUS_CELLS = 1.5;
 /** Minimum correspondences before we prefer a pin-fit homography over corners. */
-const MIN_INLIER_PINS = 12;
+const MIN_INLIER_PINS = 8;
 /** Residual above this (cells) drops a correspondence in the inlier pass. */
-const RESIDUAL_REJECT_CELLS = 0.45;
+const RESIDUAL_REJECT_CELLS = 0.5;
 
 export interface LocateBoardPinsOptions {
   minInlierPins?: number;
@@ -63,45 +66,53 @@ export function locateBoardPins(
     pinStatus: "failed",
   };
 
-  if (boardRef.status === "failed") {
+  if (boardRef.status === "failed" && pinDetections.length < 4) {
     base.pinStatus = "failed";
-    base.pinMessage = "corner localization failed; cannot seed pin matching";
-    return base;
-  }
-
-  // Seed homography from the 4 board corners (image px → board units).
-  let cornerH: number[];
-  try {
-    cornerH = buildCornerHomography(boardRef.corners);
-  } catch (err) {
-    base.pinStatus = "failed";
-    base.pinMessage = `corner homography solve failed: ${String(err)}`;
+    base.pinMessage = "no board and too few pins to seed";
     return base;
   }
 
   const canonicalPins = computePinBoardPoints();
 
-  // Initial assignment: project each detected pin to board space via cornerH,
-  // then greedy-match against canonical pin centers in score-descending order.
-  const initial = assignPinsToCanonical(
+  // ── Pin-only seed (no corner dependency) ────────────────────────────────
+  // Build a rough image→board mapping from the bounding boxes of detected
+  // and canonical pins. This works because photos are always right-side-up,
+  // so the spatial layout of detected pins roughly matches the canonical grid.
+  // This avoids the corner-ordering ambiguity entirely.
+  let seedH: number[];
+  try {
+    seedH = buildPinBBoxSeedHomography(pinDetections, canonicalPins);
+  } catch {
+    // Fallback: try corner-based seed if pin bbox fails
+    try {
+      seedH = buildCornerHomography(boardRef.corners);
+    } catch (err) {
+      base.pinStatus = "failed";
+      base.pinMessage = `seed homography failed: ${String(err)}`;
+      return base;
+    }
+  }
+
+  // Greedy nearest-neighbor assignment using the bbox seed.
+  const bestAssignment = assignPinsToCanonical(
     pinDetections,
     canonicalPins,
-    cornerH,
+    seedH,
     assignRadius,
   );
 
-  if (initial.length < minInlier) {
-    base.pinCorrespondences = initial.map((c) => ({
+  if (bestAssignment.length < minInlier) {
+    base.pinCorrespondences = bestAssignment.map((c) => ({
       ...c,
       residualBoardUnits: c.residualBoardUnits,
     }));
     base.pinStatus = "fallback_corners";
-    base.pinMessage = `only ${initial.length}/21 pin correspondences (threshold ${minInlier})`;
+    base.pinMessage = `only ${bestAssignment.length}/21 pin correspondences (threshold ${minInlier})`;
     return base;
   }
 
   // Refit N-point DLT using all accepted correspondences, then one inlier pass.
-  let refined: PinCorrespondence[] = initial;
+  let refined: PinCorrespondence[] = bestAssignment;
   let pinH: number[] | null = null;
   try {
     pinH = computeHomographyN(
@@ -149,6 +160,66 @@ export function locateBoardPins(
         ? `fit used ${refined.length}/21 pins (below 18-pin high-confidence threshold)`
         : undefined,
   };
+}
+
+/**
+ * Build a rough image→board homography from the bounding boxes of detected
+ * and canonical pins. This maps the 4 corners of the detected-pin bbox to
+ * the 4 corners of the canonical-pin bbox, giving a scale+translate+skew
+ * that's good enough for greedy pin assignment without needing board corners.
+ *
+ * Requires ≥4 pin detections and assumes photos are right-side-up.
+ */
+function buildPinBBoxSeedHomography(
+  pinDetections: PinDetection[],
+  canonicalPins: PinBoardPoint[],
+): number[] {
+  if (pinDetections.length < 4) {
+    throw new Error("need ≥4 pin detections for bbox seed");
+  }
+
+  // Bounding box of detected pins in image space
+  let imgMinX = Infinity, imgMinY = Infinity, imgMaxX = -Infinity, imgMaxY = -Infinity;
+  for (const p of pinDetections) {
+    if (p.center.x < imgMinX) imgMinX = p.center.x;
+    if (p.center.y < imgMinY) imgMinY = p.center.y;
+    if (p.center.x > imgMaxX) imgMaxX = p.center.x;
+    if (p.center.y > imgMaxY) imgMaxY = p.center.y;
+  }
+
+  // Bounding box of canonical pins in board space
+  let brdMinX = Infinity, brdMinY = Infinity, brdMaxX = -Infinity, brdMaxY = -Infinity;
+  for (const p of canonicalPins) {
+    if (p.x < brdMinX) brdMinX = p.x;
+    if (p.y < brdMinY) brdMinY = p.y;
+    if (p.x > brdMaxX) brdMaxX = p.x;
+    if (p.y > brdMaxY) brdMaxY = p.y;
+  }
+
+  // Add a small margin to the image bbox (pins might not be at exact edges)
+  const imgW = imgMaxX - imgMinX;
+  const imgH = imgMaxY - imgMinY;
+  const margin = 0.05; // 5% margin
+  imgMinX -= imgW * margin;
+  imgMinY -= imgH * margin;
+  imgMaxX += imgW * margin;
+  imgMaxY += imgH * margin;
+
+  // Map image bbox corners → canonical bbox corners via 4-point homography
+  const src: [Point2D, Point2D, Point2D, Point2D] = [
+    { x: imgMinX, y: imgMinY }, // TL
+    { x: imgMaxX, y: imgMinY }, // TR
+    { x: imgMaxX, y: imgMaxY }, // BR
+    { x: imgMinX, y: imgMaxY }, // BL
+  ];
+  const dst: [Point2D, Point2D, Point2D, Point2D] = [
+    { x: brdMinX, y: brdMinY }, // TL
+    { x: brdMaxX, y: brdMinY }, // TR
+    { x: brdMaxX, y: brdMaxY }, // BR
+    { x: brdMinX, y: brdMaxY }, // BL
+  ];
+
+  return computeHomography4(src, dst);
 }
 
 /** Build the initial image→board homography from the BoardRef corners. */
