@@ -22,6 +22,7 @@ import urllib.request
 import sys
 import re
 import subprocess
+import time
 
 import numpy as np
 
@@ -103,8 +104,9 @@ CLASS_PIN = 13
 # POSITIONS_AROUND_PINS definition). We duplicate the grid-corner math here so
 # the generator stays self-contained and doesn't import webapp engine code.
 # Each synthetic pin label is a fixed-radius disc polygon in render-space.
-PIN_RENDER_RADIUS_PX = 7.0
+PIN_RENDER_RADIUS_PX = 11
 PIN_POLYGON_SIDES = 10
+RENDER_PIN_HELPERS_IN_RGB = False
 # (row, col) grid-corner for each of the 21 pins, derived once from
 # POSITIONS_AROUND_PINS in the engine: pin center sits at (min_row+1, min_col+1)
 # of each 2x2 cell block.
@@ -130,13 +132,39 @@ PRESERVE_IMPORTED_OBJECT_SCALE = True
 CAMERA_LENS_MM = 35.0
 CAMERA_FRAMING_MARGIN = 1.20
 PLACEMENT_RADIUS = 3.5
+PLACEMENT_RADIUS_BOARD_HALF_RATIO = 0.58
 MAX_TILT_DEGREES = 5.0
-MAX_PLACEMENT_RETRIES = 500
+MAX_PLACEMENT_RETRIES = 260
 
 # ---- Overlap / visibility ----
 ALLOW_SMALL_OVERLAP = True
 MAX_ALLOWED_OVERLAP_RATIO = 0.015
 MIN_VISIBLE_PIECES_PER_IMAGE = 1
+# Placement retries become progressively more permissive on later stages:
+# (frame_margin_scale, retries_scale, overlap_scale)
+PLACEMENT_RETRY_STAGES = (
+    (1.00, 1.0, 1.0),
+    (0.45, 2.0, 2.0),
+    (0.00, 3.0, 4.0),
+)
+PLACEMENT_LAYOUT_ATTEMPTS = 5
+PLACEMENT_LAYOUT_EARLY_EXIT_RATIO = 0.90
+FORCE_ALL_REQUESTED_PIECES = False
+STRICT_ALL_PIECES_ATTEMPTS = 7
+STRICT_ALL_RADIUS_SCALE = 1.10
+STRICT_ALL_MARGIN_SCALE = 0.85
+STRICT_ALL_RETRY_SCALE = 1.25
+
+# Random composition complexity control: dense scenes are expensive and can be
+# physically hard to pack without heavy overlap, so bias toward lower counts.
+MAX_RANDOM_PIECES_PER_IMAGE = 8
+RANDOM_PIECE_COUNT_DECAY = 1.35
+MASK_RENDER_IO_RETRIES = 3
+MASK_RENDER_RETRY_DELAY_SEC = 0.06
+
+# Limit repetitive RGB-fallback logging in long Blender runs.
+MASK_FALLBACK_VERBOSE_LIMIT_PER_GROUP = 3
+MASK_FALLBACK_SUMMARY_EVERY = 200
 
 # ---- Board pose randomization ----
 BOARD_VISIBILITY_PROB = 0.50
@@ -153,6 +181,11 @@ MANUAL_BOARD_INNER_OBJECT_NAME = "board_inner"
 BOARD_LABEL_USE_INNER_MASK = True
 BOARD_INNER_INSET_RATIO = 0.025
 BOARD_INNER_MIN_INSET_PX = 2
+# Guard against accidental helper meshes (e.g., narrow strips) being used as
+# class-11 board labels. If manual board_inner fails these checks, we fall back
+# to board + erosion.
+BOARD_LABEL_MIN_MANUAL_INNER_AREA_RATIO = 0.35
+BOARD_LABEL_MIN_MANUAL_INNER_MIN_DIM_RATIO = 0.55
 
 RANDOM_PIECE_Z = 5.0
 RANDOM_EDGE_MARGIN = 0.05
@@ -199,6 +232,16 @@ def _suffix_index(name):
 
 def _natural_stl_sort_key(obj):
     return (_suffix_index(obj.name), obj.name.lower())
+
+
+def _piece_names_by_descending_footprint(piece_names):
+    def footprint(name):
+        obj = bpy.data.objects.get(name)
+        if not obj:
+            return 0.0
+        return _footprint_area(obj)
+
+    return sorted(piece_names, key=footprint, reverse=True)
 
 
 def _rename_object_safe(obj, target_name):
@@ -345,6 +388,12 @@ def center_origins_to_geometry():
             v.co -= local_center
         obj.data.update()  # Mark mesh dirty so bound_box is recomputed
         obj.location += obj.matrix_world.to_3x3() @ local_center
+        # Children parented to obj (e.g. pin_NN empties on the board) were placed
+        # in world space to sit on specific mesh features. The mesh just shifted
+        # by -local_center in parent-local coords, so each child must shift the
+        # same way or it detaches from the feature it was attached to.
+        for child in obj.children:
+            child.location -= local_center
 
     # Update again after all origins moved
     bpy.context.view_layer.update()
@@ -429,6 +478,23 @@ def configure_capture_camera(cam, scene):
     )
 
 
+def resolve_piece_placement_radius():
+    """Scale placement radius to board size so multi-piece scenes remain feasible."""
+    board_obj = bpy.data.objects.get(BOARD_NAME)
+    if not board_obj:
+        return PLACEMENT_RADIUS
+
+    try:
+        bounds = get_object_world_bounds(board_obj)
+        board_half_extent = 0.5 * max(
+            bounds["max_x"] - bounds["min_x"],
+            bounds["max_y"] - bounds["min_y"],
+        )
+        return max(PLACEMENT_RADIUS, board_half_extent * PLACEMENT_RADIUS_BOARD_HALF_RATIO)
+    except Exception:
+        return PLACEMENT_RADIUS
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # §5  PLACEMENT HELPERS
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -466,7 +532,7 @@ def get_2d_bounding_box(scene, cam, obj):
     return (min_x, min_y, max_x, max_y) if valid else None
 
 
-def is_overlapping(box1, box2):
+def is_overlapping(box1, box2, max_overlap_ratio=MAX_ALLOWED_OVERLAP_RATIO):
     if box1[0] > box2[2] or box2[0] > box1[2]:
         return False
     if box1[1] > box2[3] or box2[1] > box1[3]:
@@ -480,7 +546,7 @@ def is_overlapping(box1, box2):
     inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
     a1 = max(1e-9, (box1[2] - box1[0]) * (box1[3] - box1[1]))
     a2 = max(1e-9, (box2[2] - box2[0]) * (box2[3] - box2[1]))
-    return inter / min(a1, a2) > MAX_ALLOWED_OVERLAP_RATIO
+    return inter / min(a1, a2) > max_overlap_ratio
 
 
 def _is_inside_frame(bbox, margin):
@@ -489,7 +555,8 @@ def _is_inside_frame(bbox, margin):
 
 
 def try_place_piece(scene, cam, obj, placed_boxes, x_range, y_range, z_value,
-                    max_tilt_degrees, frame_margin, max_retries, allow_flip=True):
+                    max_tilt_degrees, frame_margin, max_retries, allow_flip=True,
+                    max_overlap_ratio=MAX_ALLOWED_OVERLAP_RATIO):
     base_rot_matrix = auto_scale_and_flatten(obj, target_size=DYNAMIC_PIECE_TARGET_SIZE)
     for _ in range(max_retries):
         yaw = mathutils.Euler((0, 0, random.uniform(0, 2 * math.pi))).to_matrix()
@@ -512,7 +579,7 @@ def try_place_piece(scene, cam, obj, placed_boxes, x_range, y_range, z_value,
             continue
         if not _is_inside_frame(bbox, frame_margin):
             continue
-        if any(is_overlapping(bbox, pb) for pb in placed_boxes):
+        if any(is_overlapping(bbox, pb, max_overlap_ratio) for pb in placed_boxes):
             continue
 
         placed_boxes.append(bbox)
@@ -520,61 +587,261 @@ def try_place_piece(scene, cam, obj, placed_boxes, x_range, y_range, z_value,
     return False
 
 
+def _capture_piece_state(piece_names):
+    snapshot = {}
+    for name in piece_names:
+        obj = bpy.data.objects.get(name)
+        if not obj:
+            continue
+        snapshot[name] = {
+            "location": obj.location.copy(),
+            "rotation_euler": obj.rotation_euler.copy(),
+            "hide_render": obj.hide_render,
+            "hide_viewport": obj.hide_viewport,
+        }
+    return snapshot
+
+
+def _restore_piece_state(snapshot):
+    for name, state in snapshot.items():
+        obj = bpy.data.objects.get(name)
+        if not obj:
+            continue
+        obj.location = state["location"]
+        obj.rotation_euler = state["rotation_euler"]
+        obj.hide_render = state["hide_render"]
+        obj.hide_viewport = state["hide_viewport"]
+    bpy.context.view_layer.update()
+
+
+def _piece_order_for_layout_attempt(piece_names, attempt_idx):
+    if attempt_idx == 0:
+        return _piece_names_by_descending_footprint(piece_names)
+
+    scored = []
+    for name in piece_names:
+        obj = bpy.data.objects.get(name)
+        area = _footprint_area(obj) if obj else 0.0
+        # Keep large-first behavior but inject jitter to escape local minima.
+        jitter = random.uniform(0.75, 1.25)
+        scored.append((-area * jitter, random.random(), name))
+    scored.sort()
+    return [name for _, _, name in scored]
+
+
+def _resolve_layout_attempts(target_count):
+    max_attempts = max(1, PLACEMENT_LAYOUT_ATTEMPTS)
+    if target_count >= 7:
+        return max_attempts
+    if target_count >= 5:
+        return min(max_attempts, 4)
+    if target_count >= 3:
+        return min(max_attempts, 3)
+    return min(max_attempts, 2)
+
+
+def _resolve_retry_budget(max_retries, target_count):
+    # Keep dense scenes at full budget; trim easy scenes for speed.
+    density = min(max(target_count, 1), len(PIECE_NAMES)) / max(len(PIECE_NAMES), 1)
+    scale = 0.70 + 0.30 * density
+    return max(80, int(round(max_retries * scale)))
+
+
 def place_active_pieces(scene, cam, active_pieces, x_range, y_range, z_value,
                         max_tilt_degrees, frame_margin, require_all=False,
                         max_retries=MAX_PLACEMENT_RETRIES, context_label="random",
                         allow_flip=True):
-    hide_all_pieces()
-    placed_boxes = []
-    placed = []
+    valid_active_pieces = [name for name in active_pieces if bpy.data.objects.get(name)]
+    if not valid_active_pieces:
+        hide_all_pieces()
+        return []
 
-    for name in active_pieces:
-        obj = bpy.data.objects.get(name)
-        if not obj:
-            continue
-        obj.hide_render = False
-        obj.hide_viewport = False
-        ok = try_place_piece(scene, cam, obj, placed_boxes, x_range, y_range,
-                             z_value, max_tilt_degrees, frame_margin, max_retries,
-                             allow_flip)
-        if not ok:
-            obj.hide_render = True
-            obj.hide_viewport = True
-            if require_all:
-                for n in placed:
-                    p = bpy.data.objects.get(n)
-                    if p:
-                        p.hide_render = True
-                        p.hide_viewport = True
-                return []
-            print(f"  INFO ({context_label}) Could not place '{name}', skipping.")
-            continue
-        placed.append(name)
+    target_count = len(valid_active_pieces)
+    layout_attempts = _resolve_layout_attempts(target_count)
+    retry_budget = _resolve_retry_budget(max_retries, target_count)
 
-    # Guarantee at least one visible piece
-    if active_pieces and len(placed) < MIN_VISIBLE_PIECES_PER_IMAGE:
-        remaining = [n for n in active_pieces if n not in placed]
-        for name in remaining:
+    best_placed = []
+    best_skipped = list(valid_active_pieces)
+    best_snapshot = None
+
+    for attempt_idx in range(layout_attempts):
+        hide_all_pieces()
+        placed_boxes = []
+        placed = []
+        skipped = []
+        hard_fail = False
+
+        ordered_active_pieces = _piece_order_for_layout_attempt(valid_active_pieces, attempt_idx)
+
+        for name in ordered_active_pieces:
             obj = bpy.data.objects.get(name)
             if not obj:
                 continue
             obj.hide_render = False
             obj.hide_viewport = False
-            ok = try_place_piece(scene, cam, obj, placed_boxes, x_range, y_range,
-                                 z_value, max_tilt_degrees,
-                                 max(0.0, frame_margin * 0.25),
-                                 max_retries * 2, allow_flip)
-            if ok:
+
+            ok = False
+            for margin_scale, retry_scale, overlap_scale in PLACEMENT_RETRY_STAGES:
+                stage_margin = max(0.0, frame_margin * margin_scale)
+                stage_retries = max(1, int(round(retry_budget * retry_scale)))
+                stage_overlap = MAX_ALLOWED_OVERLAP_RATIO * overlap_scale
+                ok = try_place_piece(
+                    scene, cam, obj, placed_boxes, x_range, y_range, z_value,
+                    max_tilt_degrees, stage_margin, stage_retries, allow_flip,
+                    max_overlap_ratio=stage_overlap,
+                )
+                if ok:
+                    break
+
+            if not ok:
+                obj.hide_render = True
+                obj.hide_viewport = True
+                if require_all:
+                    hard_fail = True
+                    break
+                skipped.append(name)
+                continue
+
+            placed.append(name)
+
+        if hard_fail:
+            skipped = [n for n in ordered_active_pieces if n not in placed]
+
+        # Guarantee at least one visible piece
+        if (not require_all and ordered_active_pieces
+                and len(placed) < MIN_VISIBLE_PIECES_PER_IMAGE):
+            remaining = [n for n in ordered_active_pieces if n not in placed]
+            for name in remaining:
+                obj = bpy.data.objects.get(name)
+                if not obj:
+                    continue
+                obj.hide_render = False
+                obj.hide_viewport = False
+                ok = try_place_piece(scene, cam, obj, placed_boxes, x_range, y_range,
+                                     z_value, max_tilt_degrees,
+                                     max(0.0, frame_margin * 0.25),
+                                     retry_budget * 2, allow_flip,
+                                     max_overlap_ratio=MAX_ALLOWED_OVERLAP_RATIO * 4.0)
+                if ok:
+                    placed.append(name)
+                    break
+                # Last resort: center the piece
+                rot_mat = auto_scale_and_flatten(obj, target_size=DYNAMIC_PIECE_TARGET_SIZE)
+                obj.rotation_euler = rot_mat.to_euler()
+                obj.location = (0.0, 0.0, z_value)
+                bpy.context.view_layer.update()
                 placed.append(name)
                 break
-            # Last resort: center the piece
-            rot_mat = auto_scale_and_flatten(obj, target_size=DYNAMIC_PIECE_TARGET_SIZE)
-            obj.rotation_euler = rot_mat.to_euler()
-            obj.location = (0.0, 0.0, z_value)
-            bpy.context.view_layer.update()
-            placed.append(name)
+
+        if len(placed) > len(best_placed):
+            best_placed = placed[:]
+            best_skipped = [n for n in valid_active_pieces if n not in best_placed]
+            best_snapshot = _capture_piece_state(valid_active_pieces)
+
+        if len(placed) == target_count:
             break
 
+        if not require_all:
+            early_target = max(
+                MIN_VISIBLE_PIECES_PER_IMAGE,
+                int(math.ceil(target_count * PLACEMENT_LAYOUT_EARLY_EXIT_RATIO)),
+            )
+            if len(placed) >= early_target:
+                break
+
+    if best_snapshot:
+        _restore_piece_state(best_snapshot)
+    else:
+        hide_all_pieces()
+
+    if require_all and len(best_placed) < target_count:
+        return []
+
+    if best_skipped:
+        skipped_names = ", ".join(best_skipped)
+        print(f"  INFO ({context_label}) Skipped {len(best_skipped)} piece(s): {skipped_names}")
+    if target_count > 1 and len(best_placed) < target_count and layout_attempts > 1:
+        print(
+            f"  INFO ({context_label}) Placement best={len(best_placed)}/{target_count} "
+            f"after {layout_attempts} layout attempts."
+        )
+
+    return best_placed
+
+
+def _force_place_pieces_ring(active_pieces, z_value, base_radius):
+    """Force-place all pieces in a ring as a last-resort smoke fallback."""
+    hide_all_pieces()
+    valid_active_pieces = [name for name in active_pieces if bpy.data.objects.get(name)]
+    target_count = len(valid_active_pieces)
+    if target_count == 0:
+        return []
+
+    ring_radius = max(4.0, float(base_radius) * 0.58)
+    placed = []
+    for idx, name in enumerate(valid_active_pieces):
+        obj = bpy.data.objects.get(name)
+        if not obj:
+            continue
+
+        rot_mat = auto_scale_and_flatten(obj, target_size=DYNAMIC_PIECE_TARGET_SIZE)
+        yaw = math.radians((360.0 * idx / target_count) + random.uniform(-12.0, 12.0))
+        yaw_mat = mathutils.Euler((0.0, 0.0, yaw)).to_matrix()
+        obj.rotation_euler = (yaw_mat @ rot_mat).to_euler()
+
+        theta = (2.0 * math.pi * idx) / target_count
+        obj.location = (
+            ring_radius * math.cos(theta),
+            ring_radius * math.sin(theta),
+            z_value,
+        )
+        obj.hide_render = False
+        obj.hide_viewport = False
+        placed.append(name)
+
+    bpy.context.view_layer.update()
+    return placed
+
+
+def place_active_pieces_strict_all(scene, cam, active_pieces, base_radius, z_value,
+                                   max_tilt_degrees, frame_margin,
+                                   context_label="random"):
+    """Require all requested pieces to be placed; raise if impossible."""
+    valid_active_pieces = [name for name in active_pieces if bpy.data.objects.get(name)]
+    target_count = len(valid_active_pieces)
+    if target_count == 0:
+        hide_all_pieces()
+        return []
+
+    radius = max(4.0, float(base_radius))
+    margin = max(0.0, float(frame_margin))
+    retry_budget = max(1, MAX_PLACEMENT_RETRIES)
+
+    for strict_idx in range(STRICT_ALL_PIECES_ATTEMPTS):
+        placed = place_active_pieces(
+            scene, cam, valid_active_pieces,
+            (-radius, radius), (-radius, radius),
+            z_value, max_tilt_degrees, margin,
+            require_all=True,
+            max_retries=retry_budget,
+            context_label=f"{context_label}:strict{strict_idx + 1}",
+        )
+        if len(placed) == target_count:
+            return placed
+
+        radius *= STRICT_ALL_RADIUS_SCALE
+        margin *= STRICT_ALL_MARGIN_SCALE
+        retry_budget = int(round(retry_budget * STRICT_ALL_RETRY_SCALE))
+
+    print(
+        f"WARNING: Strict all-piece placement failed for {target_count} pieces after "
+        f"{STRICT_ALL_PIECES_ATTEMPTS} attempts; forcing ring fallback layout."
+    )
+    placed = _force_place_pieces_ring(valid_active_pieces, z_value, base_radius)
+    if len(placed) < target_count:
+        raise RuntimeError(
+            f"Unable to force-place all requested pieces ({len(placed)}/{target_count})"
+        )
     return placed
 
 
@@ -631,6 +898,18 @@ def apply_relative_transform(parent_obj, child_obj, rel_matrix):
 PIN_OBJECT_NAME_TEMPLATE = "pin_{:02d}"  # pin_00 .. pin_20
 
 
+def set_pin_helper_visibility(visible):
+    """Pin helper objects provide positions only and are hidden in renders by default."""
+    for i in range(21):
+        pin_obj = bpy.data.objects.get(PIN_OBJECT_NAME_TEMPLATE.format(i))
+        if pin_obj:
+            pin_obj.hide_render = not visible
+            # Keep helpers evaluable in depsgraph even when visually hidden.
+            # In background renders, hidden viewport objects can yield stale
+            # matrix_world under parent motion, which collapses pin labels.
+            pin_obj.hide_viewport = False
+
+
 def compute_pin_world_positions(board_inner_obj=None):
     """Return 21 pin centers in world space.
 
@@ -649,7 +928,14 @@ def compute_pin_world_positions(board_inner_obj=None):
         obj = bpy.data.objects.get(name)
         if obj is None:
             return []  # partial setup — bail; caller skips pin labels this frame
-        positions.append(obj.matrix_world.translation.copy())
+
+        # Derive world-space transform from current parent transform explicitly.
+        # This is robust even if helper objects are hidden in viewport.
+        if obj.parent is not None:
+            world_mat = obj.parent.matrix_world @ obj.matrix_local
+            positions.append(world_mat.translation.copy())
+        else:
+            positions.append(obj.matrix_world.translation.copy())
     return positions
 
 
@@ -722,16 +1008,16 @@ def _build_split_plan(split_name, split_total):
             plan.append({"split": split_name, "mode": "random", "pieces": [piece]})
 
     # Mixed piece-count buckets fill the remainder of the random budget.
+    # Use a decaying distribution so low/medium density scenes are more common.
     remaining = random_budget - len(plan)
-    buckets = list(range(2, len(PIECE_NAMES) + 1))
+    max_piece_count = min(MAX_RANDOM_PIECES_PER_IMAGE, len(PIECE_NAMES))
+    buckets = list(range(2, max_piece_count + 1))
     if buckets and remaining > 0:
-        per = remaining // len(buckets)
-        extra = remaining % len(buckets)
-        for idx, pc in enumerate(buckets):
-            quota = per + (1 if idx < extra else 0)
-            for _ in range(quota):
-                plan.append({"split": split_name, "mode": "random",
-                             "pieces": random.sample(PIECE_NAMES, pc)})
+        weights = [1.0 / (pc ** RANDOM_PIECE_COUNT_DECAY) for pc in buckets]
+        for _ in range(remaining):
+            pc = random.choices(buckets, weights=weights, k=1)[0]
+            plan.append({"split": split_name, "mode": "random",
+                         "pieces": random.sample(PIECE_NAMES, pc)})
     elif remaining > 0:
         for _ in range(remaining):
             plan.append({"split": split_name, "mode": "random",
@@ -769,6 +1055,8 @@ def _enter_workbench_mask_mode(scene):
     """Switch to Workbench for single-object white-on-transparent mask rendering."""
     scene.render.engine = "BLENDER_WORKBENCH"
     scene.render.film_transparent = True
+    scene.render.image_settings.file_format = "PNG"
+    scene.render.image_settings.color_mode = "RGBA"
     scene.view_settings.view_transform = "Raw"
     if scene.world:
         scene.world.use_nodes = False
@@ -821,9 +1109,128 @@ def ensure_rgb_render_state(scene, rgb_engine, rgb_view_transform):
     """Force the scene back into proper RGB rendering mode."""
     scene.render.engine = rgb_engine
     scene.render.film_transparent = False
+    scene.render.image_settings.file_format = "PNG"
+    scene.render.image_settings.color_mode = "RGB"
     scene.view_settings.view_transform = rgb_view_transform
     if scene.world:
         scene.world.use_nodes = True
+
+
+_MASK_FALLBACK_LOG_COUNTS = {}
+
+
+def _log_mask_fallback(label_tag, alpha_ratio, rgb_ratio):
+    group = label_tag.split(":", 1)[0]
+    count = _MASK_FALLBACK_LOG_COUNTS.get(group, 0) + 1
+    _MASK_FALLBACK_LOG_COUNTS[group] = count
+
+    if count <= MASK_FALLBACK_VERBOSE_LIMIT_PER_GROUP:
+        print(
+            f"INFO: {label_tag} mask switched to RGB fallback "
+            f"(alpha_coverage={alpha_ratio:.3f}, rgb_coverage={rgb_ratio:.3f})"
+        )
+        if count == MASK_FALLBACK_VERBOSE_LIMIT_PER_GROUP:
+            print(
+                f"INFO: {group} fallback logs suppressed after "
+                f"{MASK_FALLBACK_VERBOSE_LIMIT_PER_GROUP} messages; "
+                f"showing every {MASK_FALLBACK_SUMMARY_EVERY} occurrences."
+            )
+    elif count % MASK_FALLBACK_SUMMARY_EVERY == 0:
+        print(f"INFO: {group} RGB fallback count={count}")
+
+
+def _select_mask_from_alpha_rgb(alpha_mask, rgb_mask, label_tag="mask"):
+    alpha_ratio = float(np.mean(alpha_mask))
+    rgb_ratio = float(np.mean(rgb_mask))
+
+    use_rgb = (
+        (alpha_ratio > 0.98 and 0.0001 < rgb_ratio < 0.98)
+        or (alpha_ratio < 0.0001 and rgb_ratio > 0.0001)
+    )
+
+    if use_rgb:
+        _log_mask_fallback(label_tag, alpha_ratio, rgb_ratio)
+        return rgb_mask
+
+    if alpha_ratio > 0.98 and rgb_ratio > 0.98:
+        print(
+            f"WARNING: {label_tag} mask appears full-frame "
+            f"(alpha_coverage={alpha_ratio:.3f}, rgb_coverage={rgb_ratio:.3f})"
+        )
+    return alpha_mask
+
+
+def _mask_from_rgba_pixels(pix_rgba, res_x, res_y, label_tag="mask"):
+    """Build a binary mask from rendered RGBA pixels with Blender-version fallback.
+
+    In some Blender builds, Workbench + transparent film can still produce
+    alpha=1 across the full frame. Prefer alpha in normal cases, but fall back
+    to RGB luminance when alpha is clearly invalid (full-frame or empty).
+    """
+    rgba = pix_rgba.reshape(res_y, res_x, 4)
+    alpha_mask = rgba[:, :, 3] > 0.5
+    rgb_mask = np.max(rgba[:, :, :3], axis=2) > 0.2
+    mask = _select_mask_from_alpha_rgb(alpha_mask, rgb_mask, label_tag=label_tag)
+    return np.flipud(mask)
+
+
+def _mask_from_png_file(temp_path, res_x, res_y, label_tag="mask"):
+    expected_px = res_x * res_y * 4
+    blender_err = None
+    bimg = None
+
+    # Prefer Blender image loading first to preserve existing orientation behavior.
+    try:
+        bimg = bpy.data.images.load(temp_path, check_existing=False)
+        if len(bimg.pixels) != expected_px:
+            raise RuntimeError(
+                f"unexpected pixel buffer size {len(bimg.pixels)} (expected {expected_px})"
+            )
+        pix = np.zeros(expected_px, dtype=np.float32)
+        bimg.pixels.foreach_get(pix)
+        return _mask_from_rgba_pixels(pix, res_x, res_y, label_tag=label_tag)
+    except Exception as exc:
+        blender_err = exc
+    finally:
+        if bimg:
+            try:
+                bpy.data.images.remove(bimg)
+            except Exception:
+                pass
+
+    # Fallback to OpenCV disk read for occasional Blender PNG read/cache glitches.
+    try:
+        arr = cv2.imread(temp_path, cv2.IMREAD_UNCHANGED)
+        if arr is None:
+            raise RuntimeError("cv2.imread returned None")
+
+        if arr.ndim == 2:
+            arr = cv2.cvtColor(arr, cv2.COLOR_GRAY2BGRA)
+        elif arr.ndim != 3:
+            raise RuntimeError(f"invalid image ndim: {arr.ndim}")
+
+        if arr.shape[2] == 3:
+            alpha = np.full((arr.shape[0], arr.shape[1], 1), 255, dtype=np.uint8)
+            arr = np.concatenate([arr, alpha], axis=2)
+        elif arr.shape[2] != 4:
+            raise RuntimeError(f"invalid channel count: {arr.shape[2]}")
+
+        if arr.shape[0] != res_y or arr.shape[1] != res_x:
+            raise RuntimeError(
+                f"unexpected image size {arr.shape[1]}x{arr.shape[0]} (expected {res_x}x{res_y})"
+            )
+
+        rgba = arr.astype(np.float32) / 255.0
+        alpha_mask = rgba[:, :, 3] > 0.5
+        rgb_mask = np.max(rgba[:, :, :3], axis=2) > 0.2
+        print(f"INFO: {label_tag} mask read via OpenCV fallback ({blender_err})")
+        return _select_mask_from_alpha_rgb(alpha_mask, rgb_mask, label_tag=label_tag)
+    except Exception as cv_err:
+        print(
+            f"WARNING: Failed to read {label_tag} mask from {temp_path} "
+            f"(blender_error={blender_err}; cv_error={cv_err})"
+        )
+        return None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -842,6 +1249,8 @@ def render_piece_masks(active_pieces, scene, res_x, res_y):
     orig_transparent = scene.render.film_transparent
     orig_view_transform = scene.view_settings.view_transform
     orig_filepath = scene.render.filepath
+    orig_file_format = scene.render.image_settings.file_format
+    orig_color_mode = scene.render.image_settings.color_mode
     world = scene.world
     orig_world_nodes = world.use_nodes if world else True
 
@@ -879,7 +1288,6 @@ def render_piece_masks(active_pieces, scene, res_x, res_y):
 
     # ── Render each piece mask ──
     masks = {}
-    pix = np.zeros(res_x * res_y * 4, dtype=np.float32)
 
     for target_name in active_pieces:
         # Hide all active pieces, show only target
@@ -889,19 +1297,33 @@ def render_piece_masks(active_pieces, scene, res_x, res_y):
                 obj.hide_render = (name != target_name)
 
         _enter_workbench_mask_mode(scene)
+        mask = None
+        for attempt in range(1, MASK_RENDER_IO_RETRIES + 1):
+            temp_path = os.path.join(
+                bpy.path.abspath("//"),
+                f"__mask_{target_name}_{random.getrandbits(32):08x}.png",
+            )
+            scene.render.filepath = temp_path
+            bpy.ops.render.render(write_still=True)
 
-        temp_path = os.path.join(bpy.path.abspath("//"), f"__mask_{target_name}__.png")
-        scene.render.filepath = temp_path
-        bpy.ops.render.render(write_still=True)
+            mask = _mask_from_png_file(temp_path, res_x, res_y, label_tag=f"piece:{target_name}")
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
 
-        bimg = bpy.data.images.load(temp_path, check_existing=False)
-        bimg.pixels.foreach_get(pix)
-        masks[target_name] = np.flipud(pix.reshape(res_y, res_x, 4)[:, :, 3] > 0.5)
-        bpy.data.images.remove(bimg)
-        try:
-            os.remove(temp_path)
-        except OSError:
-            pass
+            if mask is not None:
+                break
+            if attempt < MASK_RENDER_IO_RETRIES:
+                time.sleep(MASK_RENDER_RETRY_DELAY_SEC)
+
+        if mask is None:
+            print(
+                f"WARNING: piece:{target_name} mask unreadable after "
+                f"{MASK_RENDER_IO_RETRIES} render attempts; piece omitted from labels this frame."
+            )
+            continue
+        masks[target_name] = mask
 
     # ── Restore state ──
     for name in active_pieces:
@@ -919,6 +1341,8 @@ def render_piece_masks(active_pieces, scene, res_x, res_y):
     scene.render.film_transparent = orig_transparent
     scene.view_settings.view_transform = orig_view_transform
     scene.render.filepath = orig_filepath
+    scene.render.image_settings.file_format = orig_file_format
+    scene.render.image_settings.color_mode = orig_color_mode
     if world:
         world.use_nodes = orig_world_nodes
 
@@ -977,11 +1401,48 @@ def extract_inner_polygon_from_mask(mask):
     return extract_polygon_from_mask(eroded > 0)
 
 
+_BOARD_LABEL_INNER_WARNING_SHOWN = False
+
+
+def _manual_board_inner_sanity(board_obj, inner_obj):
+    """Return (ok, reason) for using manual board_inner as class-11 label source."""
+    if not board_obj or board_obj.type != "MESH":
+        return False, "board object missing/non-mesh"
+    if not inner_obj or inner_obj.type != "MESH":
+        return False, "manual inner object missing/non-mesh"
+
+    board_area = _footprint_area(board_obj)
+    inner_area = _footprint_area(inner_obj)
+    area_ratio = inner_area / max(board_area, 1e-9)
+
+    bdx, bdy, _ = _local_bbox_dims(board_obj)
+    idx, idy, _ = _local_bbox_dims(inner_obj)
+    board_min_dim = max(min(bdx, bdy), 1e-9)
+    inner_min_dim = min(idx, idy)
+    min_dim_ratio = inner_min_dim / board_min_dim
+
+    if area_ratio < BOARD_LABEL_MIN_MANUAL_INNER_AREA_RATIO:
+        return False, f"area_ratio={area_ratio:.3f}"
+    if min_dim_ratio < BOARD_LABEL_MIN_MANUAL_INNER_MIN_DIM_RATIO:
+        return False, f"min_dim_ratio={min_dim_ratio:.3f}"
+    return True, "ok"
+
+
 def resolve_board_label_object_name():
+    global _BOARD_LABEL_INNER_WARNING_SHOWN
+
     if MANUAL_BOARD_INNER_OBJECT_NAME:
         obj = bpy.data.objects.get(MANUAL_BOARD_INNER_OBJECT_NAME)
-        if obj and obj.type == "MESH":
+        board_obj = bpy.data.objects.get(BOARD_NAME)
+        ok, reason = _manual_board_inner_sanity(board_obj, obj)
+        if ok:
             return MANUAL_BOARD_INNER_OBJECT_NAME
+        if obj and not _BOARD_LABEL_INNER_WARNING_SHOWN:
+            print(
+                f"WARNING: Manual board label object '{MANUAL_BOARD_INNER_OBJECT_NAME}' "
+                f"failed sanity check ({reason}); falling back to '{BOARD_NAME}'."
+            )
+            _BOARD_LABEL_INNER_WARNING_SHOWN = True
     return BOARD_NAME
 
 
@@ -997,6 +1458,8 @@ def render_board_mask(scene, res_x, res_y):
     orig_transparent = scene.render.film_transparent
     orig_view_transform = scene.view_settings.view_transform
     orig_filepath = scene.render.filepath
+    orig_file_format = scene.render.image_settings.file_format
+    orig_color_mode = scene.render.image_settings.color_mode
     world = scene.world
     orig_world_nodes = world.use_nodes if world else True
 
@@ -1027,20 +1490,25 @@ def render_board_mask(scene, res_x, res_y):
     label_obj.hide_render = False
 
     _enter_workbench_mask_mode(scene)
+    mask = None
+    for attempt in range(1, MASK_RENDER_IO_RETRIES + 1):
+        temp_path = os.path.join(
+            bpy.path.abspath("//"),
+            f"__mask_board_{random.getrandbits(32):08x}.png",
+        )
+        scene.render.filepath = temp_path
+        bpy.ops.render.render(write_still=True)
 
-    temp_path = os.path.join(bpy.path.abspath("//"), f"__mask_board__.png")
-    scene.render.filepath = temp_path
-    bpy.ops.render.render(write_still=True)
+        mask = _mask_from_png_file(temp_path, res_x, res_y, label_tag="board")
+        try:
+            os.remove(temp_path)
+        except OSError:
+            pass
 
-    bimg = bpy.data.images.load(temp_path, check_existing=False)
-    pix = np.zeros(res_x * res_y * 4, dtype=np.float32)
-    bimg.pixels.foreach_get(pix)
-    mask = np.flipud(pix.reshape(res_y, res_x, 4)[:, :, 3] > 0.5)
-    bpy.data.images.remove(bimg)
-    try:
-        os.remove(temp_path)
-    except OSError:
-        pass
+        if mask is not None:
+            break
+        if attempt < MASK_RENDER_IO_RETRIES:
+            time.sleep(MASK_RENDER_RETRY_DELAY_SEC)
 
     # ── Restore state ──
     for obj in bpy.data.objects:
@@ -1051,6 +1519,8 @@ def render_board_mask(scene, res_x, res_y):
     scene.render.film_transparent = orig_transparent
     scene.view_settings.view_transform = orig_view_transform
     scene.render.filepath = orig_filepath
+    scene.render.image_settings.file_format = orig_file_format
+    scene.render.image_settings.color_mode = orig_color_mode
     if world:
         world.use_nodes = orig_world_nodes
 
@@ -1065,6 +1535,10 @@ def render_board_mask(scene, res_x, res_y):
             scene.display.render_aa = orig_shading["render_aa"]
         except Exception:
             pass
+
+    if mask is None:
+        print(f"WARNING: board mask unreadable after {MASK_RENDER_IO_RETRIES} render attempts")
+        return None
 
     # ── Extract polygon ──
     if label_obj_name == BOARD_NAME and BOARD_LABEL_USE_INNER_MASK:
@@ -1126,6 +1600,9 @@ def prepare_hdri_background(use_board, hdri_images, board_inner_rel=None):
     if hinge:
         hinge.hide_render = True
         hinge.hide_viewport = True
+
+    # Pin markers are geometry helpers only; keep them out of RGB/mask renders.
+    set_pin_helper_visibility(RENDER_PIN_HELPERS_IN_RGB)
 
     if hdri_images:
         env = world.node_tree.nodes.new("ShaderNodeTexEnvironment")
@@ -1226,15 +1703,23 @@ def generate_dataset():
 
     scene.use_nodes = False
     hide_all_pieces()
+    set_pin_helper_visibility(RENDER_PIN_HELPERS_IN_RGB)
 
     board_ref = bpy.data.objects.get(BOARD_NAME)
     board_inner_obj = bpy.data.objects.get(MANUAL_BOARD_INNER_OBJECT_NAME) if MANUAL_BOARD_INNER_OBJECT_NAME else None
     board_inner_rel = None
     if board_ref and board_inner_obj:
         board_inner_rel = capture_relative_transform(board_ref, board_inner_obj)
+
+    label_obj_name = resolve_board_label_object_name()
+    if label_obj_name == MANUAL_BOARD_INNER_OBJECT_NAME:
         print(f"Using manual inner-board label object: {MANUAL_BOARD_INNER_OBJECT_NAME}")
+    else:
+        print(f"Using board-mask label pipeline with object: {label_obj_name}")
 
     hdri_images = glob.glob(os.path.join(HDRI_DIR, "*.exr")) + glob.glob(os.path.join(HDRI_DIR, "*.hdr"))
+    piece_placement_radius = resolve_piece_placement_radius()
+    print(f"Piece placement radius resolved to {piece_placement_radius:.2f}")
     plan, stats = build_generation_plan()
 
     # Print plan summary
@@ -1254,12 +1739,20 @@ def generate_dataset():
         # Only random mode remains; solved-board modes were dropped.
         use_board = random.random() < BOARD_VISIBILITY_PROB
         prepare_hdri_background(use_board, hdri_images, board_inner_rel=board_inner_rel)
-        active_pieces = place_active_pieces(
-            scene, cam, active_pieces,
-            (-PLACEMENT_RADIUS, PLACEMENT_RADIUS),
-            (-PLACEMENT_RADIUS, PLACEMENT_RADIUS),
-            RANDOM_PIECE_Z, MAX_TILT_DEGREES, RANDOM_EDGE_MARGIN,
-            context_label="random")
+        if FORCE_ALL_REQUESTED_PIECES:
+            active_pieces = place_active_pieces_strict_all(
+                scene, cam, active_pieces,
+                piece_placement_radius,
+                RANDOM_PIECE_Z, MAX_TILT_DEGREES, RANDOM_EDGE_MARGIN,
+                context_label="random",
+            )
+        else:
+            active_pieces = place_active_pieces(
+                scene, cam, active_pieces,
+                (-piece_placement_radius, piece_placement_radius),
+                (-piece_placement_radius, piece_placement_radius),
+                RANDOM_PIECE_Z, MAX_TILT_DEGREES, RANDOM_EDGE_MARGIN,
+                context_label="random")
 
         scene.frame_set(i)
 
@@ -1273,7 +1766,12 @@ def generate_dataset():
         bpy.context.view_layer.update()
 
         img_filename = f"{i:06d}.png"
-        img_path = os.path.join(IMAGES_DIR, split, img_filename)
+        img_split_dir = os.path.join(IMAGES_DIR, split)
+        lbl_split_dir = os.path.join(LABELS_DIR, split)
+        os.makedirs(img_split_dir, exist_ok=True)
+        os.makedirs(lbl_split_dir, exist_ok=True)
+
+        img_path = os.path.join(img_split_dir, img_filename)
         scene.render.image_settings.file_format = "PNG"
         scene.render.image_settings.color_mode = "RGB"
         scene.render.filepath = img_path
@@ -1290,14 +1788,9 @@ def generate_dataset():
                 pin_polys = build_pin_label_polygons(scene, cam, pin_world, RES_X, RES_Y)
 
         # 4. Write YOLO label file
-        lbl_path = os.path.join(LABELS_DIR, split, f"{i:06d}.txt")
+        lbl_path = os.path.join(lbl_split_dir, f"{i:06d}.txt")
+        os.makedirs(os.path.dirname(lbl_path), exist_ok=True)
         with open(lbl_path, "w") as f:
-            for name, poly in polygons.items():
-                if poly is None:
-                    continue
-                coords = " ".join(f"{x:.6f} {y:.6f}" for x, y in poly)
-                f.write(f"{CLASS_MAP[name]} {coords}\n")
-
             if board_poly:
                 coords = " ".join(f"{x:.6f} {y:.6f}" for x, y in board_poly)
                 f.write(f"{CLASS_BOARD} {coords}\n")
@@ -1305,6 +1798,14 @@ def generate_dataset():
             for pin_poly in pin_polys:
                 coords = " ".join(f"{x:.6f} {y:.6f}" for x, y in pin_poly)
                 f.write(f"{CLASS_PIN} {coords}\n")
+
+            # Keep pieces last so debug viewers that paint in file order show
+            # piece masks above board/pin overlays.
+            for name, poly in polygons.items():
+                if poly is None:
+                    continue
+                coords = " ".join(f"{x:.6f} {y:.6f}" for x, y in poly)
+                f.write(f"{CLASS_MAP[name]} {coords}\n")
 
         print(f"[{i + 1}/{TOTAL_IMAGES}] ({mode}) {split}/{img_filename}")
 

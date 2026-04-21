@@ -1,0 +1,25 @@
+names:
+- A_Yellow
+- B_SkyBlue
+- C_DarkBlue
+- D_Green
+- E_Red
+- F_Teal
+- G_Pink
+- H_Purple
+- I_Orange
+- J_DarkRed
+- K_YellowGreen
+- board
+- hinge
+- pin
+nc: 14
+roboflow:
+  license: CC BY 4.0
+  project: noodels
+  url: https://universe.roboflow.com/abdulsalams-workspace-cslqv/noodels/dataset/4
+  version: 4
+  workspace: abdulsalams-workspace-cslqv
+test: ../test/images
+train: ../train/images
+val: ../valid/images

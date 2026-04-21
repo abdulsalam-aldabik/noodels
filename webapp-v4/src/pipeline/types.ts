@@ -1,7 +1,14 @@
 import type { InferenceResult } from "../inference/types";
-import type { BoardRef, BoardState, RectifiedFrame } from "../vision/types";
+import type {
+  BoardRef,
+  BoardState,
+  PinLocalizationStatus,
+  RectifiedFrame,
+} from "../vision/types";
 
-export const TELEMETRY_SCHEMA_VERSION = 1;
+export const TELEMETRY_SCHEMA_VERSION = 2;
+
+export type LocalizationVersion = "corners" | "pins";
 
 export type ScanStatus = "ok" | "lowConfidence" | "failed";
 
@@ -22,6 +29,15 @@ export interface ScanTelemetry {
     hingeFound: boolean;
     candidates: Array<{ source: string; score: number }>;
     corners: Array<{ x: number; y: number }>;
+    version: LocalizationVersion;
+    pin?: {
+      status: PinLocalizationStatus;
+      message?: string;
+      detectedPinCount: number;
+      matchedPinCount: number;
+      residualMaxCells: number;
+      residualMeanCells: number;
+    };
   };
   rectification: {
     canvasSize: { width: number; height: number };
@@ -30,7 +46,7 @@ export interface ScanTelemetry {
     homographyCondition: number;
   };
   mapping: {
-    mapperVersion: "v1" | "v2";
+    mapperVersion: "v1" | "v2" | "pins";
     pieces: Array<{
       classId: number;
       className: string;
@@ -39,6 +55,12 @@ export interface ScanTelemetry {
       mirrored: boolean;
       confidence: number;
       ambiguous: boolean;
+      /** Pin-path only: canonical pin indices the piece's mask visited. */
+      visitedPins?: number[];
+      /** Pin-path only: snapped rope-endpoint pin indices, if extraction succeeded. */
+      endpointPins?: [number, number];
+      /** Pin-path only: true if visitedPins matched a legal canonical placement. */
+      legalPair?: boolean;
     }>;
     unassigned: number;
   };

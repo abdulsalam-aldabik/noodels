@@ -1,4 +1,4 @@
-path: C:\Users\abdul\Desktop\noodels\debug-output\smoke-yolo-dataset
+path: c:\Users\abdul\Desktop\noodels\debug-output\smoke-yolo-dataset
 train: images/train
 val: images/val
 

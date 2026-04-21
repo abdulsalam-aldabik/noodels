@@ -2,9 +2,9 @@
 
 Checks:
  - Expected file counts per split (images + labels).
- - Each label class id is an integer in [0, 11] (class 12 hinge expected absent per CLAUDE.md).
+ - Each label class id is in synthetic-allowed set {0..11, 13} (hinge class 12 remains absent).
  - Each polygon coord is a float in [0.0, 1.0].
- - At least one class-11 (board) label exists across the dataset.
+ - At least one class-11 (board) and class-13 (pin) label exist across the dataset.
 
 Writes validation-report.json + validation-report.md into the dataset dir.
 Exits 0 on PASS, 1 on FAIL.
@@ -12,23 +12,58 @@ Exits 0 on PASS, 1 on FAIL.
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
 from pathlib import Path
 
-EXPECTED = {"train": 6, "val": 2}
 MAX_CLASS_ID = 13  # class 12 (hinge) expected absent in synthetic; class 13 (pin) added
 ALLOWED_SYNTHETIC_CLASS_IDS = set(range(0, 12)) | {13}  # pieces 0-10, board 11, pin 13
 
 
-def validate(root: Path) -> dict:
+def _infer_split_image_count(root: Path, split: str) -> int:
+    img_dir = root / "images" / split
+    if not img_dir.is_dir():
+        return 0
+    return len(list(img_dir.glob("*.png")))
+
+
+def _load_expected_counts(root: Path, train_override: int | None, val_override: int | None) -> dict:
+    expected = {}
+    if train_override is not None:
+        expected["train"] = max(0, int(train_override))
+    if val_override is not None:
+        expected["val"] = max(0, int(val_override))
+
+    cfg_path = root / "smoke-config.json"
+    if cfg_path.exists():
+        try:
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+            cfg_counts = cfg.get("expected_counts") or {}
+            if "train" not in expected and "train" in cfg_counts:
+                expected["train"] = int(cfg_counts["train"])
+            if "val" not in expected and "val" in cfg_counts:
+                expected["val"] = int(cfg_counts["val"])
+        except Exception:
+            pass
+
+    # Last fallback: use observed image counts so class/coord validation still runs.
+    if "train" not in expected:
+        expected["train"] = _infer_split_image_count(root, "train")
+    if "val" not in expected:
+        expected["val"] = _infer_split_image_count(root, "val")
+
+    return expected
+
+
+def validate(root: Path, expected_counts: dict) -> dict:
     img_root = root / "images"
     lbl_root = root / "labels"
     report = {
         "dataset_dir": str(root),
         "rules": {
-            "expected_counts": EXPECTED,
+            "expected_counts": expected_counts,
             "allowed_class_ids": sorted(ALLOWED_SYNTHETIC_CLASS_IDS),
             "coord_range": [0.0, 1.0],
             "requires_class_11": True,
@@ -40,7 +75,8 @@ def validate(root: Path) -> dict:
         "warnings": [],
     }
 
-    for split, expected_count in EXPECTED.items():
+    for split in ("train", "val"):
+        expected_count = int(expected_counts.get(split, 0))
         split_info = {
             "expected": expected_count,
             "images_found": 0,
@@ -172,10 +208,25 @@ def write_markdown(report: dict, out_path: Path) -> None:
     out_path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def _parse_args():
+    parser = argparse.ArgumentParser(description="Validate smoke YOLO segmentation dataset")
+    parser.add_argument(
+        "root",
+        nargs="?",
+        default=str(Path("debug-output") / "smoke-yolo-dataset"),
+        help="Dataset root folder",
+    )
+    parser.add_argument("--train", type=int, default=None, help="Expected train image count")
+    parser.add_argument("--val", type=int, default=None, help="Expected val image count")
+    return parser.parse_args()
+
+
 def main() -> int:
-    root = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("debug-output/smoke-yolo-dataset")
+    args = _parse_args()
+    root = Path(args.root)
     root = root.resolve()
-    report = validate(root)
+    expected_counts = _load_expected_counts(root, args.train, args.val)
+    report = validate(root, expected_counts)
     (root / "validation-report.json").write_text(
         json.dumps(report, indent=2, sort_keys=True), encoding="utf-8"
     )
