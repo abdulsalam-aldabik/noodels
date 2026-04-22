@@ -62,6 +62,10 @@ export interface PiecePlacement {
     score: number;
   }>;
   sourceDetectionIndex: number;
+  /** V4: exact cell positions from the canonical placement (row*14+col keys). */
+  canonicalPositions?: number[];
+  /** V4: orientation index matching the engine's orientation numbering. */
+  canonicalOrientationIndex?: number;
 }
 
 export interface BoardState {

@@ -46,7 +46,7 @@ export interface ScanTelemetry {
     homographyCondition: number;
   };
   mapping: {
-    mapperVersion: "v1" | "v2" | "pins";
+    mapperVersion: "v1" | "v2" | "v3" | "v4" | "pins";
     pieces: Array<{
       classId: number;
       className: string;
@@ -73,6 +73,8 @@ export interface DebugArtifactBlobs {
   yolo?: Blob;
   corners?: Blob;
   rectified?: Blob;
+  detectionsOnRectified?: Blob;
+  colorClassification?: Blob;
   mapped?: Blob;
   report: string; // JSON string
 }

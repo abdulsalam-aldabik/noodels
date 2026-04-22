@@ -5,13 +5,15 @@ import type { LocalizationVersion, ScanResult } from "../pipeline/types";
 
 import "../styles/app.css";
 
-type Tab = "raw" | "yolo" | "corners" | "rectified" | "mapped" | "report";
+type Tab = "raw" | "yolo" | "corners" | "rectified" | "detections" | "colors" | "mapped" | "report";
 
 const TAB_LABELS: Record<Tab, string> = {
   raw: "Raw",
   yolo: "YOLO",
   corners: "Corners",
   rectified: "Rectified",
+  detections: "Detections",
+  colors: "Colors",
   mapped: "Mapped",
   report: "Report",
 };
@@ -49,7 +51,7 @@ export default function ScanLabPage() {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<ScanResult | null>(null);
   const [tab, setTab] = useState<Tab>("mapped");
-  const [mapperVersion, setMapperVersion] = useState<MapperVersion>("v2");
+  const [mapperVersion, setMapperVersion] = useState<MapperVersion>("v4");
   const [locVersion, setLocVersion] = useState<LocalizationVersion>("pins");
 
   const artifactUrls = useMemo(() => {
@@ -60,6 +62,8 @@ export default function ScanLabPage() {
       yolo: a.yolo ? URL.createObjectURL(a.yolo) : null,
       corners: a.corners ? URL.createObjectURL(a.corners) : null,
       rectified: a.rectified ? URL.createObjectURL(a.rectified) : null,
+      detections: a.detectionsOnRectified ? URL.createObjectURL(a.detectionsOnRectified) : null,
+      colors: a.colorClassification ? URL.createObjectURL(a.colorClassification) : null,
       mapped: a.mapped ? URL.createObjectURL(a.mapped) : null,
     };
   }, [result]);
@@ -145,7 +149,7 @@ export default function ScanLabPage() {
             }}
           >
             <strong>Mapper:</strong>
-            {(["v1", "v2"] as const).map((version) => (
+            {(["v1", "v2", "v3", "v4"] as const).map((version) => (
               <button
                 key={version}
                 onClick={() => onMapperVersionChange(version)}

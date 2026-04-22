@@ -9,7 +9,7 @@ import {
 import type { Point2D } from "../inference/types";
 import type { BoardRef, Homography, RectifiedFrame } from "./types";
 
-export const DEFAULT_RECTIFIED_CANVAS = 640; // 640 / 16 = 40 px per cell
+export const DEFAULT_RECTIFIED_CANVAS = 960; // 960 / 16 = 60 px per cell
 
 /**
  * Solve H mapping src[i] → dst[i] for four pairs using the normalized DLT

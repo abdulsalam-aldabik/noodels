@@ -19,6 +19,7 @@
 import { computePinBoardPoints, type PinBoardPoint } from "../board/gridGeometry";
 import { PIECE_CLASS_COUNT, type Point2D, type RawDetection } from "../inference/types";
 import { extractPieceEndpoints } from "./PieceEndpointExtractor";
+import { applyHomography } from "./Rectifier";
 import type { PinEndpointAssignment } from "./types";
 
 /** Max distance (cells) from a mask sample to count a pin as "visited". */
@@ -29,6 +30,14 @@ const ENDPOINT_SNAP_RADIUS_CELLS = 0.9;
 export interface SnapOptions {
   visitRadiusCells?: number;
   endpointSnapRadiusCells?: number;
+  /**
+   * Inverse homography (board-space → source-image pixels). When provided,
+   * pin-visit detection uses a direct mask-probe at each canonical pin's
+   * projected image location instead of the sparse board-sample scan. This is
+   * more reliable when masks are large (high stride causes sample scan to miss
+   * pin-adjacent pixels).
+   */
+  boardToImg?: number[];
 }
 
 /** Produce one assignment per piece-class detection in `detections`. */
@@ -40,13 +49,22 @@ export function snapPiecesToPins(
   const visitRadius = options.visitRadiusCells ?? VISIT_RADIUS_CELLS;
   const endpointRadius = options.endpointSnapRadiusCells ?? ENDPOINT_SNAP_RADIUS_CELLS;
   const canonical = computePinBoardPoints();
+  const boardToImg = options.boardToImg;
 
   const out: PinEndpointAssignment[] = [];
   for (let i = 0; i < detections.length; i++) {
     const d = detections[i];
     if (d.classId >= PIECE_CLASS_COUNT) continue; // only piece classes (0..10)
     const extracted = extractPieceEndpoints(d, imgToBoard);
-    const visited = findVisitedPins(extracted.boardSamples, canonical, visitRadius);
+
+    // Pin-probe is preferred: project each canonical pin to image space and
+    // probe the mask directly. Avoids stride-based sampling gaps that cause
+    // the sample-scan to miss pins when masks are large.
+    const visited =
+      boardToImg && d.mask
+        ? findVisitedPinsByProbe(d, canonical, boardToImg)
+        : findVisitedPins(extracted.boardSamples, canonical, visitRadius);
+
     const endpointPins = extracted.endpoints
       ? snapEndpointsToPins(extracted.endpoints, canonical, endpointRadius)
       : null;
@@ -62,6 +80,103 @@ export function snapPiecesToPins(
     });
   }
   return out;
+}
+
+/**
+ * Project each canonical pin's board-space position to source-image pixels
+ * via the inverse homography, then probe the detection mask in an annular
+ * ring around that location.
+ *
+ * IQ Noodles pieces thread *around* pins — the physical peg goes through a
+ * hole in the piece. The mask therefore has a gap at the pin center and
+ * material in a ring surrounding it. We probe the annular region
+ * [PROBE_R_INNER .. PROBE_R_OUTER] mask-pixels from the projected pin center
+ * and count the fraction of ring pixels that are mask=1. A pin is "visited"
+ * when either:
+ *   - ≥1 pixel in the full probe area (inner+outer) is mask=1 (lenient), OR
+ *   - the ring coverage fraction exceeds RING_COVERAGE_THRESHOLD (strict).
+ * The lenient gate is the actual filter; the coverage fraction is exported
+ * for downstream scoring via {@link findVisitedPinsByProbeWithCoverage}.
+ */
+
+/** Inner radius: skip the hole at pin center (mask-pixel units). */
+const PROBE_R_INNER = 2;
+/** Outer radius: probe the annular ring where piece material is (mask-pixel units). */
+const PROBE_R_OUTER = 8;
+
+export interface PinVisitWithCoverage {
+  pinIndex: number;
+  /** Fraction of probed ring pixels that are mask=1 (0..1). */
+  coverage: number;
+}
+
+function findVisitedPinsByProbe(
+  detection: RawDetection,
+  canonical: PinBoardPoint[],
+  boardToImg: number[],
+): number[] {
+  return findVisitedPinsByProbeWithCoverage(detection, canonical, boardToImg)
+    .map(v => v.pinIndex);
+}
+
+export function findVisitedPinsByProbeWithCoverage(
+  detection: RawDetection,
+  canonical: PinBoardPoint[],
+  boardToImg: number[],
+): PinVisitWithCoverage[] {
+  const m = detection.mask!; // caller guards m != null
+  const { x: bx, y: by, width: bw, height: bh } = detection.bbox;
+
+  const hits: PinVisitWithCoverage[] = [];
+  for (const cp of canonical) {
+    const img = applyHomography(boardToImg, cp.x, cp.y);
+
+    // Normalised position within this detection's bbox
+    const fx = (img.x - bx) / bw;
+    const fy = (img.y - by) / bh;
+
+    // Skip pins that project outside the bbox (with small margin)
+    if (fx < -0.05 || fx > 1.05 || fy < -0.05 || fy > 1.05) continue;
+
+    const cx = fx * m.width;
+    const cy = fy * m.height;
+
+    // Probe the full area (inner + outer) for any hit, and the ring for coverage.
+    const x0 = Math.max(0, Math.round(cx) - PROBE_R_OUTER);
+    const x1 = Math.min(m.width - 1, Math.round(cx) + PROBE_R_OUTER);
+    const y0 = Math.max(0, Math.round(cy) - PROBE_R_OUTER);
+    const y1 = Math.min(m.height - 1, Math.round(cy) + PROBE_R_OUTER);
+
+    let anyHit = false;
+    let ringTotal = 0;
+    let ringHits = 0;
+    const r2Inner = PROBE_R_INNER * PROBE_R_INNER;
+    const r2Outer = PROBE_R_OUTER * PROBE_R_OUTER;
+
+    for (let y = y0; y <= y1; y++) {
+      for (let x = x0; x <= x1; x++) {
+        const dx = x - cx;
+        const dy = y - cy;
+        const d2 = dx * dx + dy * dy;
+        if (d2 > r2Outer) continue; // outside outer radius
+
+        const isSet = m.data[y * m.width + x] !== 0;
+        if (isSet) anyHit = true;
+
+        // Count ring pixels (between inner and outer radius)
+        if (d2 >= r2Inner) {
+          ringTotal++;
+          if (isSet) ringHits++;
+        }
+      }
+    }
+
+    if (anyHit) {
+      const coverage = ringTotal > 0 ? ringHits / ringTotal : 0;
+      hits.push({ pinIndex: cp.pinIndex, coverage });
+    }
+  }
+  return hits;
 }
 
 function findVisitedPins(

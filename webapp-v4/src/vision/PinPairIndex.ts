@@ -106,6 +106,57 @@ export function isLegalPinSet(classId: number, pinSet: Iterable<number>): boolea
   return findPlacementsByPinSet(classId, pinSet).length > 0;
 }
 
+/**
+ * Fuzzy lookup: exact match first, then try removing each pin one at a time
+ * (tolerance = 1 missed pin). Returns the first non-empty result found.
+ * Subset matching is safe because singletons are always empty (placements
+ * require ≥2 pins), so spurious short-circuit matches are prevented.
+ */
+export function findPlacementsByPinSetFuzzy(
+  classId: number,
+  pinSet: Iterable<number>,
+): PinVisitPlacement[] {
+  const sorted = [...new Set(pinSet)].sort((a, b) => a - b);
+  const exact = findPlacementsByPinSet(classId, sorted);
+  if (exact.length > 0) return exact;
+
+  for (let i = 0; i < sorted.length; i++) {
+    const reduced = sorted.filter((_, j) => j !== i);
+    if (reduced.length < 2) continue;
+    const matches = findPlacementsByPinSet(classId, reduced);
+    if (matches.length > 0) return matches;
+  }
+  return [];
+}
+
+/**
+ * Jaccard similarity between two pin sets: |A ∩ B| / |A ∪ B|.
+ * Returns 0 if both sets are empty.
+ */
+export function pinSetJaccard(
+  detectedPins: readonly number[],
+  placementPins: readonly number[],
+): number {
+  const a = new Set(detectedPins);
+  const b = new Set(placementPins);
+  let intersection = 0;
+  for (const pin of a) {
+    if (b.has(pin)) intersection++;
+  }
+  const union = a.size + b.size - intersection;
+  return union === 0 ? 0 : intersection / union;
+}
+
+/** All placements across all piece classes, each annotated with visited pins. */
+export function getAllPlacementsWithPins(): PinVisitPlacement[] {
+  const { forward } = build();
+  const all: PinVisitPlacement[] = [];
+  for (const entries of forward.values()) {
+    all.push(...entries);
+  }
+  return all;
+}
+
 /** Test-only: reset memoization. Do not use in app code. */
 export function __resetPinPairIndexForTests(): void {
   forwardCache = null;

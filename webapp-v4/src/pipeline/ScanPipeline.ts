@@ -8,12 +8,15 @@ import { snapPiecesToPins } from "../vision/PinSnapper";
 import { assignmentsToBoardState } from "../vision/PinPairToPlacement";
 import type { PinEndpointAssignment } from "../vision/types";
 import { mapPiecesToBoardState } from "../vision/PieceMapper";
-import { mapPiecesToBoardStateV2 } from "../vision/PieceMapperV2";
+import { mapPiecesToBoardStateV3 } from "../vision/PieceMapperV3";
+import { mapPiecesToBoardStateV4 } from "../vision/PieceMapperV4";
 import { applyHomography, rectify, DEFAULT_RECTIFIED_CANVAS } from "../vision/Rectifier";
 import type { BoardRef, BoardRefPins } from "../vision/types";
 import {
   classHistogram,
   renderCornersArtifact,
+  renderColorClassificationArtifact,
+  renderDetectionsOnRectifiedArtifact,
   renderMappedArtifact,
   renderRawArtifact,
   renderRectifiedArtifact,
@@ -28,7 +31,7 @@ import {
   type ScanTelemetry,
 } from "./types";
 
-export type MapperVersion = "v1" | "v2" | "pins";
+export type MapperVersion = "v1" | "v2" | "v3" | "v4" | "pins";
 
 export interface ScanPipelineOptions {
   runner?: InferenceRunner;
@@ -59,7 +62,7 @@ export class ScanPipeline {
     this.runner = options.runner ?? new InferenceRunner();
     this.canvasSize = options.rectifiedCanvasSize ?? DEFAULT_RECTIFIED_CANVAS;
     this.emitArtifacts = options.emitArtifacts ?? true;
-    this.mapperVersion = options.mapperVersion ?? "v2";
+    this.mapperVersion = options.mapperVersion ?? "v4";
     this.localizationVersion = options.localizationVersion ?? "pins";
   }
 
@@ -118,17 +121,32 @@ export class ScanPipeline {
       rectifiedCanvas = canvas;
 
       if (usingPinHomography) {
-        effectiveMapper = "pins";
+        // Always compute pin assignments for telemetry.
         pinAssignments = snapPiecesToPins(
           inference.detections,
           frame.homography.forward,
+          { boardToImg: frame.homography.inverse },
         );
-        boardState = assignmentsToBoardState(pinAssignments, inference.detections);
+
+        if (this.mapperVersion === "pins") {
+          effectiveMapper = "pins";
+          boardState = assignmentsToBoardState(pinAssignments, inference.detections);
+        } else if (this.mapperVersion === "v4") {
+          effectiveMapper = "v4";
+          boardState = mapPiecesToBoardStateV4(canvas, inference.detections, frame);
+        } else {
+          effectiveMapper = "v3";
+          boardState = mapPiecesToBoardStateV3(inference.detections, frame);
+        }
       } else {
-        boardState =
-          this.mapperVersion === "v2"
-            ? mapPiecesToBoardStateV2(inference.detections, frame)
-            : mapPiecesToBoardState(inference.detections, frame);
+        if (this.mapperVersion === "v4") {
+          effectiveMapper = "v4";
+          boardState = mapPiecesToBoardStateV4(canvas, inference.detections, frame);
+        } else if (this.mapperVersion === "v2" || this.mapperVersion === "v3") {
+          boardState = mapPiecesToBoardStateV3(inference.detections, frame);
+        } else {
+          boardState = mapPiecesToBoardState(inference.detections, frame);
+        }
       }
 
       if (effectiveRef.status === "lowConfidence") {
@@ -234,6 +252,14 @@ export class ScanPipeline {
         artifacts.rectified = await renderRectifiedArtifact(
           rectifiedCanvas,
           rectifiedFrame,
+        );
+        artifacts.detectionsOnRectified = await renderDetectionsOnRectifiedArtifact(
+          rectifiedCanvas,
+          rectifiedFrame,
+          inference.detections,
+        );
+        artifacts.colorClassification = await renderColorClassificationArtifact(
+          rectifiedCanvas,
         );
         if (boardState) {
           artifacts.mapped = await renderMappedArtifact(

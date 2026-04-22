@@ -1,5 +1,6 @@
 import type { InferenceResult, Point2D } from "../inference/types";
-import { BOARD_CLASS_ID, HINGE_CLASS_ID } from "../inference/types";
+import { BOARD_CLASS_ID, HINGE_CLASS_ID, PIN_CLASS_ID, PIECE_CLASS_COUNT } from "../inference/types";
+import type { RawDetection } from "../inference/types";
 import {
   BOARD_EDGE_MIN,
   BOARD_EDGE_SPAN,
@@ -9,6 +10,11 @@ import {
 } from "../board/gridGeometry";
 import type { BoardRef, BoardState, RectifiedFrame } from "../vision/types";
 import { getPlacementIndex } from "../vision/placementIndex";
+import { warpMaskToCells } from "../vision/maskToBoardGrid";
+import { applyHomography } from "../vision/Rectifier";
+import { classifyCellsByColor } from "../vision/ColorCellClassifier";
+import { PIECE_ASSETS } from "../pieces/assets";
+import { BOARD_WIDTH } from "../engine/constants";
 
 const CLASS_COLORS = [
   "#ff5555", "#55ff55", "#5577ff", "#ffaa33", "#aa55ff",
@@ -336,6 +342,328 @@ export async function renderMappedArtifact(
     ? boardState.placements.reduce((s, p) => s + p.confidence, 0) / boardState.placements.length
     : 0;
   ctx.fillText(`avg confidence: ${(avgConf * 100).toFixed(1)}%`, 10, 42);
+
+  return blobFromCanvas(out);
+}
+
+/**
+ * Debug artifact: shows what YOLO detections look like on the rectified board.
+ *
+ * For each piece detection:
+ *   - Warps the mask into the 14×14 cell grid and renders the cell coverage
+ *     as a colored heatmap overlay.
+ *   - Projects the mask centroid and bbox corners onto the rectified canvas.
+ *   - Shows visited pins (canonical pins that the mask covers) as highlighted dots.
+ *   - Labels each detection with YOLO class, confidence, and cell count.
+ *
+ * This is the key diagnostic for understanding mapping failures: you can see
+ * whether the homography is warping masks to the right grid cells, whether
+ * pins are being detected correctly, and whether the cell coverage matches
+ * the expected piece shape.
+ */
+export async function renderDetectionsOnRectifiedArtifact(
+  rectifiedCanvas: HTMLCanvasElement,
+  frame: RectifiedFrame,
+  detections: RawDetection[],
+): Promise<Blob> {
+  const w = rectifiedCanvas.width;
+  const out = document.createElement("canvas");
+  out.width = w;
+  out.height = w;
+  const ctx = out.getContext("2d");
+  if (!ctx) throw new Error("renderDetectionsOnRectified: 2d context unavailable");
+  ctx.drawImage(rectifiedCanvas, 0, 0);
+
+  const cellSize = w / BOARD_EDGE_SPAN;
+  const forward = frame.homography.forward;
+  const inverse = frame.homography.inverse;
+  const canonical = computePinBoardPoints();
+
+  // Draw the grid first (subtle).
+  ctx.strokeStyle = "rgba(255,255,255,0.2)";
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= GRID; i++) {
+    const boardCoord = -0.5 + i;
+    const a = boardToCanvas(boardCoord, -0.5, w);
+    const b = boardToCanvas(boardCoord, GRID - 0.5, w);
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+    const c = boardToCanvas(-0.5, boardCoord, w);
+    const d = boardToCanvas(GRID - 0.5, boardCoord, w);
+    ctx.beginPath();
+    ctx.moveTo(c.x, c.y);
+    ctx.lineTo(d.x, d.y);
+    ctx.stroke();
+  }
+
+  // Per-detection: warp mask to cells and render.
+  let detIndex = 0;
+  for (const det of detections) {
+    if (det.classId < 0 || det.classId >= PIECE_CLASS_COUNT) {
+      // Still show pins as small circles.
+      if (det.classId === PIN_CLASS_ID) {
+        const centroid = bboxCenter(det);
+        const bp = applyHomography(forward, centroid.x, centroid.y);
+        const cp = boardToCanvas(bp.x, bp.y, w);
+        ctx.fillStyle = "#ffffff55";
+        ctx.beginPath();
+        ctx.arc(cp.x, cp.y, 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      continue;
+    }
+
+    const color = CLASS_COLORS[det.classId % CLASS_COLORS.length];
+    const warp = warpMaskToCells(det, forward, 0.10);
+
+    // Render cell coverage heatmap.
+    for (let i = 0; i < 196; i++) {
+      const coverage = warp.cellCoverage[i];
+      if (coverage < 0.05) continue;
+      const row = Math.floor(i / 14);
+      const col = i % 14;
+      const tl = boardToCanvas(col - 0.5, row - 0.5, w);
+      const alpha = Math.min(0.7, coverage * 0.8);
+      ctx.fillStyle = color + Math.round(alpha * 255).toString(16).padStart(2, "0");
+      ctx.fillRect(tl.x, tl.y, cellSize, cellSize);
+
+      // Mark cells above threshold with a border.
+      if (warp.cellMask[i]) {
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(tl.x, tl.y, cellSize, cellSize);
+      }
+    }
+
+    // Render visited pins for this detection.
+    if (det.mask && inverse) {
+      for (const cp of canonical) {
+        const img = applyHomography(inverse, cp.x, cp.y);
+        const fx = (img.x - det.bbox.x) / det.bbox.width;
+        const fy = (img.y - det.bbox.y) / det.bbox.height;
+        if (fx < -0.05 || fx > 1.05 || fy < -0.05 || fy > 1.05) continue;
+
+        // Check if mask covers this pin.
+        const mx = Math.round(fx * det.mask.width);
+        const my = Math.round(fy * det.mask.height);
+        if (mx < 0 || mx >= det.mask.width || my < 0 || my >= det.mask.height) continue;
+
+        // Probe a 5px radius around the pin.
+        let found = false;
+        for (let dy = -5; dy <= 5 && !found; dy++) {
+          for (let dx = -5; dx <= 5 && !found; dx++) {
+            const px = mx + dx;
+            const py = my + dy;
+            if (px >= 0 && px < det.mask.width && py >= 0 && py < det.mask.height) {
+              if (det.mask.data[py * det.mask.width + px]) found = true;
+            }
+          }
+        }
+
+        if (found) {
+          const q = boardToCanvas(cp.x, cp.y, w);
+          ctx.fillStyle = color;
+          ctx.beginPath();
+          ctx.arc(q.x, q.y, 5, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = "#fff";
+          ctx.lineWidth = 1;
+          ctx.stroke();
+        }
+      }
+    }
+
+    // Label: class name, confidence, cell count.
+    const centroid = bboxCenter(det);
+    const bp = applyHomography(forward, centroid.x, centroid.y);
+    const cp = boardToCanvas(bp.x, bp.y, w);
+    ctx.fillStyle = "#fff";
+    ctx.font = `bold ${Math.round(w / 45)}px sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(det.className, cp.x, cp.y - 8);
+    ctx.font = `${Math.round(w / 55)}px sans-serif`;
+    ctx.fillStyle = color;
+    ctx.fillText(
+      `${(det.score * 100).toFixed(0)}% · ${warp.totalCells}c`,
+      cp.x,
+      cp.y + 10,
+    );
+
+    detIndex++;
+  }
+
+  // Pin markers (canonical positions).
+  ctx.fillStyle = "#ff4d8d";
+  for (const p of canonical) {
+    const q = boardToCanvas(p.x, p.y, w);
+    ctx.beginPath();
+    ctx.arc(q.x, q.y, 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Legend.
+  ctx.fillStyle = "rgba(0,0,0,0.6)";
+  ctx.fillRect(4, 4, 300, 42);
+  ctx.fillStyle = "#fff";
+  ctx.font = "12px sans-serif";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  const pieceCount = detections.filter(d => d.classId >= 0 && d.classId < PIECE_CLASS_COUNT).length;
+  const pinCount = detections.filter(d => d.classId === PIN_CLASS_ID).length;
+  ctx.fillText(`YOLO on Rectified: ${pieceCount} pieces, ${pinCount} pins`, 10, 10);
+  ctx.fillText(`Cell coverage heatmap (colored = detected mask cells)`, 10, 26);
+
+  return blobFromCanvas(out);
+}
+
+function bboxCenter(d: RawDetection): { x: number; y: number } {
+  return {
+    x: d.bbox.x + d.bbox.width / 2,
+    y: d.bbox.y + d.bbox.height / 2,
+  };
+}
+
+/**
+ * Debug artifact: color-based cell classification.
+ *
+ * Shows the rectified board with each valid cell colored by its classified
+ * piece (using the actual piece reference colors). Empty/board cells are
+ * left transparent. Region boundaries are drawn with white outlines.
+ * Each region is labeled with the piece name and cell count.
+ */
+export async function renderColorClassificationArtifact(
+  rectifiedCanvas: HTMLCanvasElement,
+): Promise<Blob> {
+  const w = rectifiedCanvas.width;
+  const out = document.createElement("canvas");
+  out.width = w;
+  out.height = w;
+  const ctx = out.getContext("2d");
+  if (!ctx) throw new Error("renderColorClassification: 2d context unavailable");
+  ctx.drawImage(rectifiedCanvas, 0, 0);
+
+  const cellSize = w / BOARD_EDGE_SPAN;
+  const result = classifyCellsByColor(rectifiedCanvas);
+
+  // Draw the grid.
+  ctx.strokeStyle = "rgba(255,255,255,0.15)";
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= GRID; i++) {
+    const boardCoord = -0.5 + i;
+    const a = boardToCanvas(boardCoord, -0.5, w);
+    const b = boardToCanvas(boardCoord, GRID - 0.5, w);
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+    const c = boardToCanvas(-0.5, boardCoord, w);
+    const d = boardToCanvas(GRID - 0.5, boardCoord, w);
+    ctx.beginPath();
+    ctx.moveTo(c.x, c.y);
+    ctx.lineTo(d.x, d.y);
+    ctx.stroke();
+  }
+
+  // Draw classified cells with piece colors.
+  for (const cell of result.cells) {
+    if (cell.classId < 0) continue; // skip empty/pin
+
+    const asset = PIECE_ASSETS.find(a => a.pieceId === cell.classId);
+    if (!asset) continue;
+
+    const tl = boardToCanvas(cell.col - 0.5, cell.row - 0.5, w);
+    const alpha = Math.round(Math.max(0.35, Math.min(0.75, cell.confidence)) * 255);
+    ctx.fillStyle = asset.colorHex + alpha.toString(16).padStart(2, "0");
+    ctx.fillRect(tl.x, tl.y, cellSize, cellSize);
+
+    // Thin border in piece color.
+    ctx.strokeStyle = asset.colorHex;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(tl.x, tl.y, cellSize, cellSize);
+  }
+
+  // Draw region boundaries (thicker outline around connected pieces).
+  const cellToRegion = new Map<number, number>();
+  result.regions.forEach((r, idx) => {
+    for (const c of r.cells) cellToRegion.set(c, idx);
+  });
+
+  for (const region of result.regions) {
+    const asset = PIECE_ASSETS.find(a => a.pieceId === region.classId);
+    if (!asset) continue;
+
+    for (const cellIdx of region.cells) {
+      const row = Math.floor(cellIdx / BOARD_WIDTH);
+      const col = cellIdx % BOARD_WIDTH;
+      const tl = boardToCanvas(col - 0.5, row - 0.5, w);
+
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 2;
+
+      // Draw edge only if neighbor is different region or missing.
+      // Top
+      const topIdx = (row - 1) * BOARD_WIDTH + col;
+      if (row === 0 || cellToRegion.get(topIdx) !== cellToRegion.get(cellIdx)) {
+        ctx.beginPath(); ctx.moveTo(tl.x, tl.y); ctx.lineTo(tl.x + cellSize, tl.y); ctx.stroke();
+      }
+      // Bottom
+      const botIdx = (row + 1) * BOARD_WIDTH + col;
+      if (row === GRID - 1 || cellToRegion.get(botIdx) !== cellToRegion.get(cellIdx)) {
+        ctx.beginPath(); ctx.moveTo(tl.x, tl.y + cellSize); ctx.lineTo(tl.x + cellSize, tl.y + cellSize); ctx.stroke();
+      }
+      // Left
+      const leftIdx = row * BOARD_WIDTH + col - 1;
+      if (col === 0 || cellToRegion.get(leftIdx) !== cellToRegion.get(cellIdx)) {
+        ctx.beginPath(); ctx.moveTo(tl.x, tl.y); ctx.lineTo(tl.x, tl.y + cellSize); ctx.stroke();
+      }
+      // Right
+      const rightIdx = row * BOARD_WIDTH + col + 1;
+      if (col === GRID - 1 || cellToRegion.get(rightIdx) !== cellToRegion.get(cellIdx)) {
+        ctx.beginPath(); ctx.moveTo(tl.x + cellSize, tl.y); ctx.lineTo(tl.x + cellSize, tl.y + cellSize); ctx.stroke();
+      }
+    }
+
+    // Label region with piece name and cell count.
+    const avgRow = region.cells.reduce((s, c) => s + Math.floor(c / BOARD_WIDTH), 0) / region.cells.length;
+    const avgCol = region.cells.reduce((s, c) => s + (c % BOARD_WIDTH), 0) / region.cells.length;
+    const center = boardToCanvas(avgCol, avgRow, w);
+    ctx.fillStyle = "#fff";
+    ctx.font = `bold ${Math.round(w / 45)}px sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(asset.key, center.x, center.y - 6);
+    ctx.font = `${Math.round(w / 55)}px sans-serif`;
+    ctx.fillStyle = asset.colorHex;
+    ctx.fillText(
+      `${region.cells.length}c · ${(region.avgConfidence * 100).toFixed(0)}%`,
+      center.x, center.y + 10,
+    );
+  }
+
+  // Pin markers.
+  ctx.fillStyle = "#ff4d8d";
+  const pins = computePinBoardPoints();
+  for (const p of pins) {
+    const q = boardToCanvas(p.x, p.y, w);
+    ctx.beginPath();
+    ctx.arc(q.x, q.y, 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Legend.
+  ctx.fillStyle = "rgba(0,0,0,0.6)";
+  ctx.fillRect(4, 4, 350, 42);
+  ctx.fillStyle = "#fff";
+  ctx.font = "12px sans-serif";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  const classifiedCount = result.cells.filter(c => c.classId >= 0).length;
+  const regionCount = result.regions.length;
+  ctx.fillText(`Color Classification: ${classifiedCount} cells → ${regionCount} regions`, 10, 10);
+  ctx.fillText(`Pieces found: ${result.regions.map(r => PIECE_ASSETS.find(a => a.pieceId === r.classId)?.key ?? "?").join(", ")}`, 10, 26);
 
   return blobFromCanvas(out);
 }

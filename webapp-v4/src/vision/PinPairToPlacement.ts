@@ -21,7 +21,7 @@ import type {
   PiecePlacement,
   PinEndpointAssignment,
 } from "./types";
-import { findPlacementsByPinSet, type PinVisitPlacement } from "./PinPairIndex";
+import { findPlacementsByPinSetFuzzy, type PinVisitPlacement } from "./PinPairIndex";
 
 const EXACT_MATCH_CONFIDENCE = 0.95;
 const AMBIGUOUS_PRIMARY_CONFIDENCE = 0.55;
@@ -39,7 +39,7 @@ export function resolveAssignmentToPlacement(
   options: ResolveOptions = {},
 ): PiecePlacement | null {
   if (assignment.visitedPins.length < 2) return null;
-  const candidates = findPlacementsByPinSet(assignment.classId, assignment.visitedPins);
+  const candidates = findPlacementsByPinSetFuzzy(assignment.classId, assignment.visitedPins);
   if (candidates.length === 0) return null;
 
   const ambiguous = candidates.length > 1;

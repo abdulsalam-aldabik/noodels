@@ -19,12 +19,45 @@ function resolveToEnginePlacement(
   cell: { row: number; col: number },
   orientationDeg: number,
   mirrored: boolean,
+  canonicalPositions?: number[],
+  canonicalOrientationIndex?: number,
 ): EnginePlacement | null {
-  const targetPos = cell.row * BOARD_WIDTH + cell.col;
   const allPlacements = generatePlacementsForPiece(classId);
   const rotationSteps = orientationDeg / 90;
 
-  // First try: match by rotation + mirror + position coverage
+  // V4 path: use the exact positions from the canonical placement.
+  // Match by position set equality — this is guaranteed to find the exact placement.
+  if (canonicalPositions && canonicalPositions.length > 0) {
+    const posSet = new Set(canonicalPositions);
+
+    // Best: match by exact position set.
+    for (const p of allPlacements) {
+      if (p.positions.length !== posSet.size) continue;
+      if (p.positions.every(pos => posSet.has(pos))) {
+        return p;
+      }
+    }
+
+    // Fallback: match by orientationIndex + rotation + mirror.
+    if (canonicalOrientationIndex !== undefined) {
+      for (const p of allPlacements) {
+        if (
+          p.orientationIndex === canonicalOrientationIndex &&
+          (p.rotationSteps ?? 0) === rotationSteps &&
+          (p.mirrored ?? false) === mirrored
+        ) {
+          // Check that at least one position overlaps.
+          if (p.positions.some(pos => posSet.has(pos))) {
+            return p;
+          }
+        }
+      }
+    }
+  }
+
+  // Legacy path: match by rotation + mirror + single cell coverage.
+  const targetPos = cell.row * BOARD_WIDTH + cell.col;
+
   for (const p of allPlacements) {
     if (
       (p.rotationSteps ?? 0) === rotationSteps &&
@@ -35,12 +68,10 @@ function resolveToEnginePlacement(
     }
   }
 
-  // Fallback: find the placement that covers the target cell and is closest
-  // in rotation/mirror
+  // Last resort: find any placement covering the target cell.
   const covering = allPlacements.filter((p) => p.positions.includes(targetPos));
   if (covering.length === 0) return null;
 
-  // Pick the best match by centroid distance to the cell
   let best = covering[0];
   let bestDist = Infinity;
   for (const p of covering) {
@@ -159,14 +190,17 @@ export default function CaptureView({ onScanComplete, onCancel }: CaptureViewPro
 
     const confirmed = new Map<number, EnginePlacement>();
     for (const placement of scanResult.boardState.placements) {
-      if (placement.ambiguous) continue; // skip ambiguous pieces
-      if (placement.confidence < 0.3) continue; // skip low confidence
+      // V4 passes exact canonical positions, so even ambiguous pieces are
+      // placed correctly. Only skip truly garbage detections.
+      if (placement.confidence < 0.15) continue;
 
       const enginePlacement = resolveToEnginePlacement(
         placement.classId,
         placement.cell,
         placement.orientation,
         placement.mirrored,
+        placement.canonicalPositions,
+        placement.canonicalOrientationIndex,
       );
       if (enginePlacement) {
         confirmed.set(placement.classId, enginePlacement);
@@ -244,6 +278,10 @@ export default function CaptureView({ onScanComplete, onCancel }: CaptureViewPro
             <span className="capture-quality-label">Localization</span>
             <span>{scanResult!.telemetry.localization.version} · score {scanResult!.boardRef.cornerScore.toFixed(2)}</span>
           </div>
+          <div className="capture-quality-row">
+            <span className="capture-quality-label">Mapper</span>
+            <span>{scanResult!.telemetry.mapping.mapperVersion}</span>
+          </div>
         </div>
       )}
 
@@ -274,11 +312,16 @@ export default function CaptureView({ onScanComplete, onCancel }: CaptureViewPro
           </button>
         )}
 
-        {isSuccess && phase === "done" && (
-          <button className="capture-btn capture-btn--confirm" onClick={handleConfirm}>
-            Apply to Board ({placedCount - ambiguousCount} pieces)
-          </button>
-        )}
+        {isSuccess && phase === "done" && (() => {
+          const confirmableCount = scanResult!.boardState!.placements.filter(
+            p => p.confidence >= 0.15,
+          ).length;
+          return (
+            <button className="capture-btn capture-btn--confirm" onClick={handleConfirm}>
+              Apply to Board ({confirmableCount} pieces)
+            </button>
+          );
+        })()}
 
         {phase === "done" && !isSuccess && (
           <button className="capture-btn" onClick={handleRetry}>
