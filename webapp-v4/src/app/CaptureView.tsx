@@ -212,7 +212,6 @@ export default function CaptureView({ onScanComplete, onCancel }: CaptureViewPro
 
   // Count placed pieces
   const placedCount = scanResult?.boardState?.placements.length ?? 0;
-  const ambiguousCount = scanResult?.boardState?.placements.filter(p => p.ambiguous).length ?? 0;
   const isSuccess = scanResult && scanResult.status !== "failed" && placedCount > 0;
 
   return (
@@ -268,7 +267,7 @@ export default function CaptureView({ onScanComplete, onCancel }: CaptureViewPro
           <div className="capture-quality-row">
             <span className="capture-quality-label">Pieces found</span>
             <span className={`capture-quality-dot ${placedCount >= 8 ? "ok" : placedCount >= 4 ? "warn" : "bad"}`} />
-            <span>{placedCount} placed{ambiguousCount > 0 ? ` (${ambiguousCount} ambiguous)` : ""}</span>
+            <span>{placedCount} placed</span>
           </div>
           <div className="capture-quality-row">
             <span className="capture-quality-label">Detections</span>
