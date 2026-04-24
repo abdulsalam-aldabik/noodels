@@ -4,12 +4,7 @@ import { expectedCellSpacingPx, BOARD_EDGE_MAX, BOARD_EDGE_MIN } from "../board/
 import { locateBoard } from "../vision/BoardLocator";
 import { locatePins } from "../vision/PinLocator";
 import { locateBoardPins } from "../vision/BoardLocatorPins";
-import { snapPiecesToPins } from "../vision/PinSnapper";
-import { assignmentsToBoardState } from "../vision/PinPairToPlacement";
-import type { PinEndpointAssignment } from "../vision/types";
 import { mapPiecesToBoardState } from "../vision/PieceMapper";
-import { mapPiecesToBoardStateV3 } from "../vision/PieceMapperV3";
-import { mapPiecesToBoardStateV4 } from "../vision/PieceMapperV4";
 import { applyHomography, rectify, DEFAULT_RECTIFIED_CANVAS } from "../vision/Rectifier";
 import type { BoardRef, BoardRefPins } from "../vision/types";
 import {
@@ -31,38 +26,31 @@ import {
   type ScanTelemetry,
 } from "./types";
 
-export type MapperVersion = "v1" | "v2" | "v3" | "v4" | "pins";
-
 export interface ScanPipelineOptions {
   runner?: InferenceRunner;
   rectifiedCanvasSize?: number;
   emitArtifacts?: boolean;
-  mapperVersion?: MapperVersion;
   /**
-   * Which board-localization path to run. "corners" (default) uses the
-   * 4-corner BoardLocator only. "pins" also runs PinLocator +
-   * BoardLocatorPins to refine the homography from detected class-13 pins,
-   * and — when pin localization succeeds — uses PinSnapper +
-   * PinPairToPlacement for piece mapping instead of mapperVersion's mapper.
+   * Which board-localization path to run. "corners" uses the 4-corner
+   * BoardLocator only. "pins" also runs PinLocator + BoardLocatorPins to
+   * refine the homography from detected class-13 pins.
    */
   localizationVersion?: LocalizationVersion;
 }
 
 /**
- * Staged orchestrator: image -> inference -> localization -> rectification -> mapping -> artifacts.
+ * Orchestrator: image → inference → localization → rectification → mapping → artifacts.
  */
 export class ScanPipeline {
   private readonly runner: InferenceRunner;
   private readonly canvasSize: number;
   private readonly emitArtifacts: boolean;
-  private readonly mapperVersion: MapperVersion;
   private readonly localizationVersion: LocalizationVersion;
 
   constructor(options: ScanPipelineOptions = {}) {
     this.runner = options.runner ?? new InferenceRunner();
     this.canvasSize = options.rectifiedCanvasSize ?? DEFAULT_RECTIFIED_CANVAS;
     this.emitArtifacts = options.emitArtifacts ?? true;
-    this.mapperVersion = options.mapperVersion ?? "v4";
     this.localizationVersion = options.localizationVersion ?? "pins";
   }
 
@@ -85,8 +73,6 @@ export class ScanPipeline {
       pinRef = locateBoardPins(pins, cornerRef);
     }
 
-    // Decide which BoardRef to use for rectification. The pin path only
-    // overrides the corners when it produced a usable homography.
     const usingPinHomography =
       !!pinRef &&
       pinRef.pinStatus !== "fallback_corners" &&
@@ -102,8 +88,6 @@ export class ScanPipeline {
     let rectifiedCanvas: HTMLCanvasElement | null = null;
     let status: ScanStatus = "ok";
     let message: string | undefined;
-    let effectiveMapper: MapperVersion = this.mapperVersion;
-    let pinAssignments: PinEndpointAssignment[] = [];
 
     if (effectiveRef.status === "failed") {
       status = "failed";
@@ -111,8 +95,6 @@ export class ScanPipeline {
     } else {
       const { frame, canvas } = rectify(image, effectiveRef, {
         canvasSize: this.canvasSize,
-        // When pin path produced a valid homography, use it directly for
-        // rectification. This avoids the lossy corners→H→corners→H round-trip.
         precomputedImgToBoard: usingPinHomography
           ? pinRef!.pinHomography!.forward
           : undefined,
@@ -120,34 +102,7 @@ export class ScanPipeline {
       rectifiedFrame = frame;
       rectifiedCanvas = canvas;
 
-      if (usingPinHomography) {
-        // Always compute pin assignments for telemetry.
-        pinAssignments = snapPiecesToPins(
-          inference.detections,
-          frame.homography.forward,
-          { boardToImg: frame.homography.inverse },
-        );
-
-        if (this.mapperVersion === "pins") {
-          effectiveMapper = "pins";
-          boardState = assignmentsToBoardState(pinAssignments, inference.detections);
-        } else if (this.mapperVersion === "v4") {
-          effectiveMapper = "v4";
-          boardState = mapPiecesToBoardStateV4(canvas, inference.detections, frame);
-        } else {
-          effectiveMapper = "v3";
-          boardState = mapPiecesToBoardStateV3(inference.detections, frame);
-        }
-      } else {
-        if (this.mapperVersion === "v4") {
-          effectiveMapper = "v4";
-          boardState = mapPiecesToBoardStateV4(canvas, inference.detections, frame);
-        } else if (this.mapperVersion === "v2" || this.mapperVersion === "v3") {
-          boardState = mapPiecesToBoardStateV3(inference.detections, frame);
-        } else {
-          boardState = mapPiecesToBoardState(inference.detections, frame);
-        }
-      }
+      boardState = mapPiecesToBoardState(canvas, inference.detections);
 
       if (effectiveRef.status === "lowConfidence") {
         status = "lowConfidence";
@@ -212,28 +167,16 @@ export class ScanPipeline {
             homographyCondition: 0,
           },
       mapping: {
-        mapperVersion: effectiveMapper,
-        pieces: (boardState?.placements ?? []).map((placement) => {
-          const assignment = pinAssignments.find(
-            (a) => a.sourceDetectionIndex === placement.sourceDetectionIndex,
-          );
-          return {
-            classId: placement.classId,
-            className: placement.className,
-            cell: placement.cell,
-            orientation: placement.orientation,
-            mirrored: placement.mirrored,
-            confidence: placement.confidence,
-            ambiguous: placement.ambiguous,
-            ...(assignment
-              ? {
-                  visitedPins: assignment.visitedPins,
-                  endpointPins: assignment.endpointPins ?? undefined,
-                  legalPair: true,
-                }
-              : {}),
-          };
-        }),
+        mapperVersion: "v4",
+        pieces: (boardState?.placements ?? []).map((placement) => ({
+          classId: placement.classId,
+          className: placement.className,
+          cell: placement.cell,
+          orientation: placement.orientation,
+          mirrored: placement.mirrored,
+          confidence: placement.confidence,
+          ambiguous: placement.ambiguous,
+        })),
         unassigned: boardState?.unassignedDetections.length ?? 0,
       },
       status,
@@ -285,7 +228,7 @@ export class ScanPipeline {
 
 /**
  * Back-project the 4 board edge corners from a pin-fit homography so the
- * downstream Rectifier (which solves from 4 corners) uses the refined fit.
+ * downstream Rectifier uses the refined fit.
  */
 function refineCornersFromPinHomography(
   pinRef: BoardRefPins,
@@ -301,7 +244,7 @@ function refineCornersFromPinHomography(
   return {
     ...cornerRef,
     corners: edgeCorners,
-    cornerSource: "ransac_line_intersection", // reuse existing enum; pin-refined
+    cornerSource: "ransac_line_intersection",
     cornerScore: Math.max(cornerRef.cornerScore, 0.85),
     status: cornerRef.status === "failed" ? "failed" : "ok",
   };

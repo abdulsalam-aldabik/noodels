@@ -25,8 +25,6 @@ function resolveToEnginePlacement(
   const allPlacements = generatePlacementsForPiece(classId);
   const rotationSteps = orientationDeg / 90;
 
-  // V4 path: use the exact positions from the canonical placement.
-  // Match by position set equality — this is guaranteed to find the exact placement.
   if (canonicalPositions && canonicalPositions.length > 0) {
     const posSet = new Set(canonicalPositions);
 
@@ -190,8 +188,6 @@ export default function CaptureView({ onScanComplete, onCancel }: CaptureViewPro
 
     const confirmed = new Map<number, EnginePlacement>();
     for (const placement of scanResult.boardState.placements) {
-      // V4 passes exact canonical positions, so even ambiguous pieces are
-      // placed correctly. Only skip truly garbage detections.
       if (placement.confidence < 0.15) continue;
 
       const enginePlacement = resolveToEnginePlacement(

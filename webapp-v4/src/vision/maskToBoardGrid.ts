@@ -1,7 +1,6 @@
 /**
  * Warps a detection mask (or bbox fallback) into the canonical 14×14 board-unit
- * grid and produces per-cell coverage + binarized bitmap structures used by
- * PieceMapperV2. Pure function, no DOM access.
+ * grid and produces per-cell coverage + binarized bitmap structures. Pure function, no DOM access.
  */
 
 import type { RawDetection } from "../inference/types";

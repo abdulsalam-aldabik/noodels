@@ -46,7 +46,7 @@ export interface ScanTelemetry {
     homographyCondition: number;
   };
   mapping: {
-    mapperVersion: "v1" | "v2" | "v3" | "v4" | "pins";
+    mapperVersion: "v4";
     pieces: Array<{
       classId: number;
       className: string;
@@ -55,12 +55,6 @@ export interface ScanTelemetry {
       mirrored: boolean;
       confidence: number;
       ambiguous: boolean;
-      /** Pin-path only: canonical pin indices the piece's mask visited. */
-      visitedPins?: number[];
-      /** Pin-path only: snapped rope-endpoint pin indices, if extraction succeeded. */
-      endpointPins?: [number, number];
-      /** Pin-path only: true if visitedPins matched a legal canonical placement. */
-      legalPair?: boolean;
     }>;
     unassigned: number;
   };

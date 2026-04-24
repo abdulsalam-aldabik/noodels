@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 
-import { ScanPipeline, type MapperVersion } from "../pipeline/ScanPipeline";
+import { ScanPipeline } from "../pipeline/ScanPipeline";
 import type { LocalizationVersion, ScanResult } from "../pipeline/types";
 
 import "../styles/app.css";
@@ -51,7 +51,6 @@ export default function ScanLabPage() {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<ScanResult | null>(null);
   const [tab, setTab] = useState<Tab>("mapped");
-  const [mapperVersion, setMapperVersion] = useState<MapperVersion>("v4");
   const [locVersion, setLocVersion] = useState<LocalizationVersion>("pins");
 
   const artifactUrls = useMemo(() => {
@@ -68,27 +67,19 @@ export default function ScanLabPage() {
     };
   }, [result]);
 
-  async function ensurePipeline(mapper: MapperVersion, loc: LocalizationVersion): Promise<ScanPipeline> {
-    const key = `${mapper}+${loc}`;
-    const existing = pipelinesRef.current[key];
+  async function ensurePipeline(loc: LocalizationVersion): Promise<ScanPipeline> {
+    const existing = pipelinesRef.current[loc];
     if (existing) return existing;
 
     setLoadingModel(true);
     try {
-      const pipeline = new ScanPipeline({ mapperVersion: mapper, localizationVersion: loc });
+      const pipeline = new ScanPipeline({ localizationVersion: loc });
       await pipeline.ensureLoaded();
-      pipelinesRef.current[key] = pipeline;
+      pipelinesRef.current[loc] = pipeline;
       return pipeline;
     } finally {
       setLoadingModel(false);
     }
-  }
-
-  function onMapperVersionChange(version: MapperVersion) {
-    if (version === mapperVersion) return;
-    setMapperVersion(version);
-    setResult(null);
-    setError(null);
   }
 
   function onLocVersionChange(version: LocalizationVersion) {
@@ -102,7 +93,7 @@ export default function ScanLabPage() {
     setRunning(true);
     setError(null);
     try {
-      const pipeline = await ensurePipeline(mapperVersion, locVersion);
+      const pipeline = await ensurePipeline(locVersion);
       const r = await pipeline.run(image);
       setResult(r);
     } catch (e) {
@@ -133,7 +124,7 @@ export default function ScanLabPage() {
       <header className="iq-noodles-header">
         <h1>Scan Lab</h1>
         <p className="iq-noodles-subtitle">
-          Phase 2 — Inference · BoardLocator · Rectifier
+          Pipeline Inspector — Inference · Localization · Rectification · Mapping
         </p>
       </header>
 
@@ -148,22 +139,6 @@ export default function ScanLabPage() {
               marginBottom: 12,
             }}
           >
-            <strong>Mapper:</strong>
-            {(["v1", "v2", "v3", "v4"] as const).map((version) => (
-              <button
-                key={version}
-                onClick={() => onMapperVersionChange(version)}
-                disabled={running || loadingModel}
-                style={{
-                  fontWeight: mapperVersion === version ? 700 : 400,
-                  textDecoration: mapperVersion === version ? "underline" : "none",
-                }}
-              >
-                {version.toUpperCase()}
-              </button>
-            ))}
-
-            <span style={{ marginLeft: 16 }} />
             <strong>Localization:</strong>
             {(["corners", "pins"] as const).map((version) => (
               <button
@@ -192,8 +167,8 @@ export default function ScanLabPage() {
             {loadingModel
               ? "Loading YOLO model…"
               : running
-                ? `Running pipeline (${mapperVersion.toUpperCase()})…`
-                : `Idle (${mapperVersion.toUpperCase()}).`}
+                ? "Running pipeline…"
+                : "Idle."}
           </p>
           {error ? <p style={{ color: "#ff6b6b" }}>Error: {error}</p> : null}
         </section>

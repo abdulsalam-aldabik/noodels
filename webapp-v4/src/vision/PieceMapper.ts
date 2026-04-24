@@ -1,233 +1,192 @@
-import { snapToCell } from "../board/gridGeometry";
+/**
+ * PieceMapper — Per-cell color voting + global greedy assignment.
+ *
+ * Algorithm:
+ *   1. Classify every board cell by color → piece class or empty.
+ *   2. For each piece class (0-10), gather ALL cells classified as that class
+ *      (ignoring connectivity — handles split/noisy regions).
+ *   3. For each piece class with detected cells, scan ALL canonical placements
+ *      and count how many placement cells are "hit" by the detected cells.
+ *      The placement with the highest hit count wins.
+ *   4. Global greedy assignment: process pieces in order of best hit-count,
+ *      ensuring no cell is double-assigned.
+ */
+
+import { PIECE_CLASS_COUNT, type RawDetection, CLASS_NAMES } from "../inference/types";
 import {
-  BOARD_CLASS_ID,
-  CLASS_NAMES,
-  HINGE_CLASS_ID,
-  PIN_CLASS_ID,
-  type RawDetection,
-} from "../inference/types";
-import { PIECE_ASSETS, type PieceKey } from "../pieces/assets";
-import { applyHomography } from "./Rectifier";
+  getPlacementsByClass,
+  type PinVisitPlacement,
+} from "./PinPairIndex";
+import type {
+  BoardState,
+  PieceOrientation,
+  PiecePlacement,
+} from "./types";
 import {
-  matchPieceOrientation,
-  type BoardCell,
-  type OrientationMatchInput,
-  type OrientationMatchResult,
-} from "./OrientationMatcher";
-import type { BoardState, PiecePlacement, RectifiedFrame } from "./types";
+  classifyCellsByColor,
+  type ColorClassificationResult,
+} from "./ColorCellClassifier";
 
-const PIECE_KEYS: readonly PieceKey[] = [
-  "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K",
-];
+// ── Types ────────────────────────────────────────────────────────────────────
 
-const PIECE_KEY_SET = new Set<PieceKey>(PIECE_KEYS);
-
-const PIECE_ID_BY_KEY = PIECE_ASSETS.reduce<Record<PieceKey, number>>(
-  (acc, asset) => {
-    acc[asset.key] = asset.pieceId;
-    return acc;
-  },
-  {} as Record<PieceKey, number>,
-);
-
-export interface PieceMapperOptions {
-  topK?: number;
-  ambiguityDelta?: number;
-  orientationMatcher?: (input: OrientationMatchInput) => OrientationMatchResult;
+interface CandidateMatch {
+  classId: number;
+  placement: PinVisitPlacement;
+  /** How many of the placement's cells were detected as this class. */
+  hitCount: number;
+  /** hitCount / placement.cellSet.size — what fraction of the piece is visible. */
+  hitRatio: number;
+  /** How many detected cells of this class fall OUTSIDE this placement. */
+  extraCells: number;
 }
 
-function clamp01(value: number): number {
-  if (value < 0) return 0;
-  if (value > 1) return 1;
-  return value;
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+function rotationToOrientation(steps: 0 | 1 | 2 | 3): PieceOrientation {
+  return (steps * 90) as PieceOrientation;
 }
 
-function imagePointToBoardCell(
-  imageX: number,
-  imageY: number,
-  homographyForward: number[],
-): BoardCell {
-  const boardPoint = applyHomography(homographyForward, imageX, imageY);
-  const snapped = snapToCell(boardPoint.x, boardPoint.y);
-  return { row: snapped.row, col: snapped.col };
-}
-
-function centroidFromMask(detection: RawDetection): { x: number; y: number } | null {
-  const mask = detection.mask;
-  if (!mask || mask.width <= 0 || mask.height <= 0) return null;
-
-  let sumX = 0;
-  let sumY = 0;
-  let count = 0;
-
-  for (let y = 0; y < mask.height; y++) {
-    for (let x = 0; x < mask.width; x++) {
-      const value = mask.data[y * mask.width + x];
-      if (!value) continue;
-      sumX += x + 0.5;
-      sumY += y + 0.5;
-      count += 1;
-    }
-  }
-
-  if (count === 0) return null;
-
-  const normX = sumX / count / mask.width;
-  const normY = sumY / count / mask.height;
-  return {
-    x: detection.bbox.x + normX * detection.bbox.width,
-    y: detection.bbox.y + normY * detection.bbox.height,
-  };
-}
-
-function detectionAnchorPoint(detection: RawDetection): { x: number; y: number } {
-  const fromMask = centroidFromMask(detection);
-  if (fromMask) return fromMask;
-  return {
-    x: detection.bbox.x + detection.bbox.width / 2,
-    y: detection.bbox.y + detection.bbox.height / 2,
-  };
-}
-
-function observedCellsFromMask(
-  detection: RawDetection,
-  homographyForward: number[],
-): BoardCell[] {
-  const mask = detection.mask;
-  if (!mask || mask.width <= 0 || mask.height <= 0) return [];
-
-  const keys = new Set<string>();
-  const cells: BoardCell[] = [];
-
-  for (let y = 0; y < mask.height; y++) {
-    for (let x = 0; x < mask.width; x++) {
-      const value = mask.data[y * mask.width + x];
-      if (!value) continue;
-
-      const imageX = detection.bbox.x + ((x + 0.5) / mask.width) * detection.bbox.width;
-      const imageY = detection.bbox.y + ((y + 0.5) / mask.height) * detection.bbox.height;
-      const cell = imagePointToBoardCell(imageX, imageY, homographyForward);
-      const key = `${cell.row},${cell.col}`;
-
-      if (keys.has(key)) continue;
-      keys.add(key);
-      cells.push(cell);
-    }
-  }
-
-  return cells;
-}
-
-export function pieceKeyFromDetection(detection: RawDetection): PieceKey | null {
-  if (PIECE_KEY_SET.has(detection.className as PieceKey)) {
-    return detection.className as PieceKey;
-  }
-
-  if (detection.classId >= 0 && detection.classId < 11) {
-    const className = CLASS_NAMES[detection.classId];
-    if (className && PIECE_KEY_SET.has(className as PieceKey)) {
-      return className as PieceKey;
-    }
-  }
-
-  return null;
-}
-
-interface CandidatePlacement {
-  pieceKey: PieceKey;
-  placement: PiecePlacement;
-  rawDetection: RawDetection;
-}
+// ── Main mapper ──────────────────────────────────────────────────────────────
 
 export function mapPiecesToBoardState(
+  rectifiedCanvas: HTMLCanvasElement,
   detections: RawDetection[],
-  rectified: RectifiedFrame,
-  options: PieceMapperOptions = {},
 ): BoardState {
-  const matchOrientation = options.orientationMatcher ?? matchPieceOrientation;
+  // Step 1: Color-classify every cell.
+  const colorResult = classifyCellsByColor(rectifiedCanvas);
 
-  const candidates: CandidatePlacement[] = [];
-  const unassigned: RawDetection[] = [];
+  // Step 2: Group cells by piece class (ignoring connectivity).
+  const cellsByClass = new Map<number, Set<number>>();
+  for (const cell of colorResult.cells) {
+    if (cell.classId < 0) continue; // skip empty/pin
+    let set = cellsByClass.get(cell.classId);
+    if (!set) {
+      set = new Set<number>();
+      cellsByClass.set(cell.classId, set);
+    }
+    set.add(cell.cellIndex);
+  }
 
-  for (let detectionIndex = 0; detectionIndex < detections.length; detectionIndex++) {
-    const detection = detections[detectionIndex];
+  // Step 3: For each piece class, find the best canonical placement.
+  const allCandidates: CandidateMatch[] = [];
 
-    if (detection.classId === BOARD_CLASS_ID || detection.classId === HINGE_CLASS_ID || detection.classId === PIN_CLASS_ID) {
-      continue;
+  for (const [classId, detectedCells] of cellsByClass) {
+    if (detectedCells.size < 2) continue; // need at least 2 cells
+
+    const placements = getPlacementsByClass(classId);
+    let bestHitCount = 0;
+    let bestPlacement: PinVisitPlacement | null = null;
+    let bestExtra = Infinity;
+
+    for (const pl of placements) {
+      let hits = 0;
+      for (const cellKey of pl.cellSet) {
+        if (detectedCells.has(cellKey)) hits++;
+      }
+
+      if (hits === 0) continue;
+
+      const extra = detectedCells.size - hits;
+
+      if (hits > bestHitCount || (hits === bestHitCount && extra < bestExtra)) {
+        bestHitCount = hits;
+        bestPlacement = pl;
+        bestExtra = extra;
+      }
     }
 
-    const pieceKey = pieceKeyFromDetection(detection);
-    if (!pieceKey) {
-      unassigned.push(detection);
-      continue;
+    if (bestPlacement && bestHitCount >= 2) {
+      allCandidates.push({
+        classId,
+        placement: bestPlacement,
+        hitCount: bestHitCount,
+        hitRatio: bestHitCount / bestPlacement.cellSet.size,
+        extraCells: bestExtra,
+      });
     }
+  }
 
-    const pieceId = PIECE_ID_BY_KEY[pieceKey];
-    if (pieceId === undefined) {
-      unassigned.push(detection);
-      continue;
+  // Step 4: Global greedy assignment — most hits first.
+  allCandidates.sort((a, b) => {
+    if (b.hitCount !== a.hitCount) return b.hitCount - a.hitCount;
+    return a.extraCells - b.extraCells;
+  });
+
+  const occupiedCells = new Set<number>();
+  const usedClassIds = new Set<number>();
+  const placementsOut: PiecePlacement[] = [];
+
+  for (const cand of allCandidates) {
+    if (usedClassIds.has(cand.classId)) continue;
+
+    let collides = false;
+    for (const cellKey of cand.placement.cellSet) {
+      if (occupiedCells.has(cellKey)) {
+        collides = true;
+        break;
+      }
     }
+    if (collides) continue;
 
-    const anchorPoint = detectionAnchorPoint(detection);
-    const anchorCell = imagePointToBoardCell(
-      anchorPoint.x,
-      anchorPoint.y,
-      rectified.homography.forward,
-    );
-
-    const observedCells = observedCellsFromMask(
-      detection,
-      rectified.homography.forward,
-    );
-    if (observedCells.length === 0) {
-      observedCells.push(anchorCell);
+    for (const cellKey of cand.placement.cellSet) {
+      occupiedCells.add(cellKey);
     }
+    usedClassIds.add(cand.classId);
 
-    const match = matchOrientation({
-      pieceId,
-      observedCells,
-      topK: options.topK,
-      ambiguityDelta: options.ambiguityDelta,
-    });
+    // Ambiguity: check if runner-up orientation scores within 2 hits.
+    const detectedCells = cellsByClass.get(cand.classId)!;
+    let runnerUpHits = 0;
+    const placements = getPlacementsByClass(cand.classId);
+    for (const pl of placements) {
+      if (pl === cand.placement) continue;
+      if (pl.rotationSteps === cand.placement.rotationSteps &&
+          pl.mirrored === cand.placement.mirrored) continue;
+      let hits = 0;
+      for (const cellKey of pl.cellSet) {
+        if (detectedCells.has(cellKey)) hits++;
+      }
+      if (hits > runnerUpHits) runnerUpHits = hits;
+    }
+    const ambiguous = (cand.hitCount - runnerUpHits) < 2;
 
-    const placement: PiecePlacement = {
-      classId: detection.classId,
-      className: pieceKey,
-      cell: anchorCell,
-      orientation: match.orientation,
-      mirrored: match.mirrored,
-      confidence: clamp01(detection.score * match.confidence),
-      ambiguous: match.ambiguous,
-      topK: match.topK.map((candidate) => ({
-        orientation: candidate.orientation,
-        mirrored: candidate.mirrored,
-        score: candidate.score,
-      })),
-      sourceDetectionIndex: detectionIndex,
-    };
+    const confidence = Math.min(1, cand.hitRatio);
 
-    candidates.push({
-      pieceKey,
-      placement,
-      rawDetection: detection,
+    placementsOut.push({
+      classId: cand.classId,
+      className: CLASS_NAMES[cand.classId],
+      cell: {
+        row: cand.placement.topLeftCell.row,
+        col: cand.placement.topLeftCell.col,
+      },
+      orientation: rotationToOrientation(cand.placement.rotationSteps),
+      mirrored: cand.placement.mirrored,
+      confidence,
+      ambiguous,
+      canonicalPositions: [...cand.placement.cellSet],
+      canonicalOrientationIndex: cand.placement.orientationIndex,
     });
   }
 
-  // Keep the highest-confidence candidate per piece key.
-  candidates.sort((a, b) => b.placement.confidence - a.placement.confidence);
-  const placements: PiecePlacement[] = [];
-  const usedPieceKeys = new Set<PieceKey>();
-  for (const candidate of candidates) {
-    if (usedPieceKeys.has(candidate.pieceKey)) {
-      unassigned.push(candidate.rawDetection);
-      continue;
+  // Collect YOLO detections not matched by color classification.
+  const unassignedDetections: RawDetection[] = [];
+  for (const det of detections) {
+    if (det.classId >= 0 && det.classId < PIECE_CLASS_COUNT) {
+      if (!usedClassIds.has(det.classId)) {
+        unassignedDetections.push(det);
+      }
     }
-    usedPieceKeys.add(candidate.pieceKey);
-    placements.push(candidate.placement);
   }
 
   return {
-    placements,
-    unassignedDetections: unassigned,
+    placements: placementsOut,
+    unassignedDetections,
   };
+}
+
+// ── Debug export ─────────────────────────────────────────────────────────────
+
+export function getColorClassification(
+  rectifiedCanvas: HTMLCanvasElement,
+): ColorClassificationResult {
+  return classifyCellsByColor(rectifiedCanvas);
 }

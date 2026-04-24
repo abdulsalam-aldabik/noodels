@@ -56,15 +56,7 @@ export interface PiecePlacement {
   mirrored: boolean;
   confidence: number;
   ambiguous: boolean;
-  topK: Array<{
-    orientation: PieceOrientation;
-    mirrored: boolean;
-    score: number;
-  }>;
-  sourceDetectionIndex: number;
-  /** V4: exact cell positions from the canonical placement (row*14+col keys). */
   canonicalPositions?: number[];
-  /** V4: orientation index matching the engine's orientation numbering. */
   canonicalOrientationIndex?: number;
 }
 
@@ -114,17 +106,3 @@ export interface BoardRefPins extends BoardRef {
   pinMessage?: string;
 }
 
-/** Per-piece result of pin-anchored piece mapping, before legal-placement resolution. */
-export interface PinEndpointAssignment {
-  classId: number;
-  className: string;
-  sourceDetectionIndex: number;
-  /** Set of canonical pin indices the piece's mask is flagged as visiting. Sorted ascending. */
-  visitedPins: number[];
-  /** Two rope-endpoint pin indices, if extraction succeeded. */
-  endpointPins: [number, number] | null;
-  /** Endpoint positions in board-space (from PCA extrema or fallback). */
-  endpoints: [Point2D, Point2D] | null;
-  /** Raw PCA eigen-ratio (major/minor). <2 signals a curled piece where PCA is unreliable. */
-  pcaEigenRatio: number;
-}
