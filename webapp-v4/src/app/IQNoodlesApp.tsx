@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { NoodlesBoard } from "../engine/board";
 import { IQ_NOODLES_PIECES, POSITIONS_AROUND_PINS } from "../engine/constants";
@@ -11,13 +11,32 @@ import BoardCanvas from "../ui/BoardCanvas";
 import ControlBar from "../ui/ControlBar";
 import DebugPanel from "../ui/DebugPanel";
 import PieceInventory from "../ui/PieceInventory";
+import TouchPiecePicker from "../ui/TouchPiecePicker";
 import SharedInventoryCanvas from "../rendering/SharedInventoryCanvas";
 import { useOrientations } from "../hooks/useOrientations";
 import { usePlacementFinder } from "../hooks/usePlacementFinder";
 import { useSolver } from "../hooks/useSolver";
+import CameraCaptureView from "./CameraCaptureView";
 import CaptureView from "./CaptureView";
 
 import "../styles/app.css";
+
+const PHONE_MEDIA_QUERY = "(max-width: 900px)";
+
+function useIsPhone(): boolean {
+  const [isPhone, setIsPhone] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.matchMedia(PHONE_MEDIA_QUERY).matches;
+  });
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mql = window.matchMedia(PHONE_MEDIA_QUERY);
+    const onChange = (e: MediaQueryListEvent) => setIsPhone(e.matches);
+    mql.addEventListener("change", onChange);
+    return () => mql.removeEventListener("change", onChange);
+  }, []);
+  return isPhone;
+}
 
 export default function IQNoodlesApp() {
   const board = useMemo(() => new NoodlesBoard(), []);
@@ -65,7 +84,11 @@ export default function IQNoodlesApp() {
 
   // ── App mode ─────────────────────────────────────────────────────────────
 
-  const [mode, setMode] = useState<"manual" | "scan">("manual");
+  const isPhone = useIsPhone();
+  const [mode, setMode] = useState<"manual" | "scan">(() => {
+    if (typeof window === "undefined") return "manual";
+    return window.matchMedia(PHONE_MEDIA_QUERY).matches ? "scan" : "manual";
+  });
 
   // ── Core state ───────────────────────────────────────────────────────────
 
@@ -344,7 +367,83 @@ export default function IQNoodlesApp() {
 
   // ── Render ────────────────────────────────────────────────────────────────
 
-  // Scan mode takes over the full shell
+  if (isPhone) {
+    if (mode === "scan") {
+      return (
+        <>
+          <SharedInventoryCanvas />
+          <div className="noodles-shell is-mobile">
+            <CameraCaptureView
+              onScanComplete={onScanComplete}
+              onOpenManual={() => setMode("manual")}
+            />
+          </div>
+        </>
+      );
+    }
+
+    return (
+      <>
+        <SharedInventoryCanvas />
+        <div className="noodles-shell is-mobile">
+          <div className="mobile-manual">
+            <div className="mobile-manual-topbar">
+              <button
+                type="button"
+                className="camera-chip"
+                onClick={() => setMode("scan")}
+                aria-label="Back to camera"
+              >
+                ← Camera
+              </button>
+              <span className="mobile-manual-title">Manual</span>
+              <div className="mobile-manual-topbar-actions">
+                <button type="button" className="camera-chip" onClick={onHint} aria-label="Hint">
+                  Hint
+                </button>
+                <button type="button" className="camera-chip" onClick={onSolve} aria-label="Solve">
+                  Solve
+                </button>
+                <button type="button" className="camera-chip" onClick={clearBoard} aria-label="Clear board">
+                  Clear
+                </button>
+              </div>
+            </div>
+
+            <div className="mobile-manual-board">
+              <BoardCanvas
+                coordinator={coordinator}
+                boardCells={boardCells}
+                pinCenters={pinCenters}
+                placedCells={placedCells}
+                placedModels={placedModels}
+                previewPlacement={previewPlacement}
+                selectedPieceId={selectedPieceId}
+                showDebug={showDebug}
+                placedByPiece={placedByPiece}
+                onPointerMove={onBoardPointerMove}
+                onPointerLeave={() => setHoverPoint(null)}
+                onPointerDown={onBoardClick}
+              />
+            </div>
+
+            {solverStatus && <div className="mobile-manual-status">{solverStatus}</div>}
+
+            <TouchPiecePicker
+              pieceStats={pieceStats}
+              selectedPieceId={selectedPieceId}
+              onSelect={setSelectedPieceId}
+              onRotate={rotate}
+              onFlip={flip}
+              onPickUp={removePiece}
+            />
+          </div>
+        </div>
+      </>
+    );
+  }
+
+  // Desktop: unchanged layout
   if (mode === "scan") {
     return (
       <>

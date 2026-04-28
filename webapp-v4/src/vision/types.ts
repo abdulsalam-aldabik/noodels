@@ -48,6 +48,8 @@ export interface RectifiedFrame {
 
 export type PieceOrientation = 0 | 90 | 180 | 270;
 
+export type PieceMapSource = "yolo-mask" | "color-rescue";
+
 export interface PiecePlacement {
   classId: number;
   className: string;
@@ -56,13 +58,27 @@ export interface PiecePlacement {
   mirrored: boolean;
   confidence: number;
   ambiguous: boolean;
+  /** Where this placement came from. Mask = YOLO segmentation. Color = fallback. */
+  source?: PieceMapSource;
+  /** Mean YOLO mask coverage across the placement's cells. Only set when source = "yolo-mask". */
+  maskCellCoverage?: number;
   canonicalPositions?: number[];
   canonicalOrientationIndex?: number;
+}
+
+export interface PieceMapStats {
+  /** Number of placements produced from YOLO segmentation masks. */
+  maskCount: number;
+  /** Number of placements produced from color fallback. */
+  colorRescueCount: number;
+  /** Color-only classes that were dropped because they conflicted with mask placements. */
+  droppedColorClassIds: number[];
 }
 
 export interface BoardState {
   placements: PiecePlacement[];
   unassignedDetections: RawDetection[];
+  stats: PieceMapStats;
 }
 
 /** One class-13 detection reduced to its centroid, in image pixels. */

@@ -102,7 +102,11 @@ export class ScanPipeline {
       rectifiedFrame = frame;
       rectifiedCanvas = canvas;
 
-      boardState = mapPiecesToBoardState(canvas, inference.detections);
+      boardState = mapPiecesToBoardState(
+        canvas,
+        inference.detections,
+        frame.homography,
+      );
 
       if (effectiveRef.status === "lowConfidence") {
         status = "lowConfidence";
@@ -176,8 +180,12 @@ export class ScanPipeline {
           mirrored: placement.mirrored,
           confidence: placement.confidence,
           ambiguous: placement.ambiguous,
+          source: placement.source,
         })),
         unassigned: boardState?.unassignedDetections.length ?? 0,
+        maskCount: boardState?.stats.maskCount ?? 0,
+        colorRescueCount: boardState?.stats.colorRescueCount ?? 0,
+        droppedColorClassIds: boardState?.stats.droppedColorClassIds ?? [],
       },
       status,
       message,

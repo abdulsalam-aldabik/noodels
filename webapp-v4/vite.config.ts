@@ -1,5 +1,6 @@
 import { defineConfig, type PluginOption } from 'vite'
 import react from '@vitejs/plugin-react'
+import basicSsl from '@vitejs/plugin-basic-ssl'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -43,13 +44,16 @@ function testImagesPlugin(): PluginOption {
 }
 
 export default defineConfig({
-  plugins: [react(), testImagesPlugin()],
+  // basicSsl: self-signed HTTPS in dev so the phone (on LAN, not localhost)
+  // has a secure origin — required for navigator.mediaDevices.getUserMedia.
+  plugins: [react(), basicSsl(), testImagesPlugin()],
   optimizeDeps: {
     // onnxruntime-web uses SharedArrayBuffer; exclude from Vite's pre-bundling
     // so it can manage its own WASM worker threads correctly.
     exclude: ['onnxruntime-web'],
   },
   server: {
+    host: true,
     headers: {
       // Required for SharedArrayBuffer (used by ONNX Runtime Web WASM threads).
       'Cross-Origin-Embedder-Policy': 'require-corp',

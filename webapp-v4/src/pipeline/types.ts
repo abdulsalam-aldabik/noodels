@@ -55,8 +55,12 @@ export interface ScanTelemetry {
       mirrored: boolean;
       confidence: number;
       ambiguous: boolean;
+      source?: "yolo-mask" | "color-rescue";
     }>;
     unassigned: number;
+    maskCount: number;
+    colorRescueCount: number;
+    droppedColorClassIds: number[];
   };
   status: ScanStatus;
   message?: string;

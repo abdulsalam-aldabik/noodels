@@ -1,96 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import type { PiecePlacement as EnginePlacement } from "../engine/types";
 import { ScanPipeline } from "../pipeline/ScanPipeline";
 import type { ScanResult } from "../pipeline/types";
-import type { PiecePlacement as EnginePlacement } from "../engine/types";
-import { generatePlacementsForPiece } from "../engine/placements";
-import { BOARD_WIDTH } from "../engine/constants";
 
-// ── Pipeline bridge ───────────────────────────────────────────────────────────
-
-/**
- * Convert the current pipeline's vision PiecePlacement (which has classId,
- * cell, orientation, mirrored) into the engine's PiecePlacement (which has
- * positions[], orientationIndex, rotationSteps, mirrored) by finding the
- * matching canonical placement.
- */
-function resolveToEnginePlacement(
-  classId: number,
-  cell: { row: number; col: number },
-  orientationDeg: number,
-  mirrored: boolean,
-  canonicalPositions?: number[],
-  canonicalOrientationIndex?: number,
-): EnginePlacement | null {
-  const allPlacements = generatePlacementsForPiece(classId);
-  const rotationSteps = orientationDeg / 90;
-
-  if (canonicalPositions && canonicalPositions.length > 0) {
-    const posSet = new Set(canonicalPositions);
-
-    // Best: match by exact position set.
-    for (const p of allPlacements) {
-      if (p.positions.length !== posSet.size) continue;
-      if (p.positions.every(pos => posSet.has(pos))) {
-        return p;
-      }
-    }
-
-    // Fallback: match by orientationIndex + rotation + mirror.
-    if (canonicalOrientationIndex !== undefined) {
-      for (const p of allPlacements) {
-        if (
-          p.orientationIndex === canonicalOrientationIndex &&
-          (p.rotationSteps ?? 0) === rotationSteps &&
-          (p.mirrored ?? false) === mirrored
-        ) {
-          // Check that at least one position overlaps.
-          if (p.positions.some(pos => posSet.has(pos))) {
-            return p;
-          }
-        }
-      }
-    }
-  }
-
-  // Legacy path: match by rotation + mirror + single cell coverage.
-  const targetPos = cell.row * BOARD_WIDTH + cell.col;
-
-  for (const p of allPlacements) {
-    if (
-      (p.rotationSteps ?? 0) === rotationSteps &&
-      (p.mirrored ?? false) === mirrored &&
-      p.positions.includes(targetPos)
-    ) {
-      return p;
-    }
-  }
-
-  // Last resort: find any placement covering the target cell.
-  const covering = allPlacements.filter((p) => p.positions.includes(targetPos));
-  if (covering.length === 0) return null;
-
-  let best = covering[0];
-  let bestDist = Infinity;
-  for (const p of covering) {
-    let sumRow = 0, sumCol = 0;
-    for (const pos of p.positions) {
-      sumRow += Math.floor(pos / BOARD_WIDTH);
-      sumCol += pos % BOARD_WIDTH;
-    }
-    const avgRow = sumRow / p.positions.length;
-    const avgCol = sumCol / p.positions.length;
-    const dr = avgRow - cell.row;
-    const dc = avgCol - cell.col;
-    const dist = dr * dr + dc * dc;
-    if (dist < bestDist) {
-      bestDist = dist;
-      best = p;
-    }
-  }
-
-  return best;
-}
+import {
+  DEFAULT_SCAN_CONFIDENCE_THRESHOLD,
+  buildConfirmedPlacements,
+  countConfirmable,
+} from "./scanConfirm";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -184,25 +102,8 @@ export default function CaptureView({ onScanComplete, onCancel }: CaptureViewPro
   }, [previewUrl]);
 
   const handleConfirm = useCallback(() => {
-    if (!scanResult || scanResult.status === "failed" || !scanResult.boardState) return;
-
-    const confirmed = new Map<number, EnginePlacement>();
-    for (const placement of scanResult.boardState.placements) {
-      if (placement.confidence < 0.15) continue;
-
-      const enginePlacement = resolveToEnginePlacement(
-        placement.classId,
-        placement.cell,
-        placement.orientation,
-        placement.mirrored,
-        placement.canonicalPositions,
-        placement.canonicalOrientationIndex,
-      );
-      if (enginePlacement) {
-        confirmed.set(placement.classId, enginePlacement);
-      }
-    }
-
+    if (!scanResult) return;
+    const confirmed = buildConfirmedPlacements(scanResult);
     onScanComplete(confirmed);
   }, [scanResult, onScanComplete]);
 
@@ -307,16 +208,11 @@ export default function CaptureView({ onScanComplete, onCancel }: CaptureViewPro
           </button>
         )}
 
-        {isSuccess && phase === "done" && (() => {
-          const confirmableCount = scanResult!.boardState!.placements.filter(
-            p => p.confidence >= 0.15,
-          ).length;
-          return (
-            <button className="capture-btn capture-btn--confirm" onClick={handleConfirm}>
-              Apply to Board ({confirmableCount} pieces)
-            </button>
-          );
-        })()}
+        {isSuccess && phase === "done" && (
+          <button className="capture-btn capture-btn--confirm" onClick={handleConfirm}>
+            Apply to Board ({countConfirmable(scanResult, DEFAULT_SCAN_CONFIDENCE_THRESHOLD)} pieces)
+          </button>
+        )}
 
         {phase === "done" && !isSuccess && (
           <button className="capture-btn" onClick={handleRetry}>
