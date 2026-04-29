@@ -10,6 +10,11 @@ async function resolvePage(): Promise<ComponentType> {
     return module.default
   }
 
+  if (import.meta.env.DEV && path === '/dev/scan-lab') {
+    const module = await import('./dev/ScanLabPage')
+    return module.default
+  }
+
   const module = await import('./app/IQNoodlesApp')
   return module.default
 }

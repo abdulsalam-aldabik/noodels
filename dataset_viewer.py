@@ -26,7 +26,7 @@ import yaml
 PROJECT_ROOT     = Path(__file__).parent
 DEFAULT_DATASET  = PROJECT_ROOT / 'yolo_dataset'
 
-# Piece colors (match game colors) + white for board + cyan for hinge
+# Piece colors (match game colors) + metadata classes (board/hinge/pin)
 PALETTE = [
     (249, 214,  94),  # 0  A Yellow
     (  8, 167, 232),  # 1  B SkyBlue
@@ -41,6 +41,7 @@ PALETTE = [
     (149, 212,  80),  # 10 K YellowGreen
     (255, 255, 255),  # 11 board  — white
     ( 80, 220, 255),  # 12 hinge  — cyan
+    (255, 196,  64),  # 13 pin    — amber
 ]
 
 

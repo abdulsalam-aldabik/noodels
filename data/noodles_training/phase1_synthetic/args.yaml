@@ -1,7 +1,7 @@
 task: segment
 mode: train
 model: yolo26n-seg.pt
-data: /home/salumi/projects/project/yolo_dataset/dataset.yaml
+data: C:\Users\abdul\Desktop\noodels\yolo_dataset\dataset.yaml
 epochs: 100
 time: null
 patience: 20
@@ -12,7 +12,7 @@ save_period: 25
 cache: false
 device: '0'
 workers: 2
-project: /home/salumi/projects/project/data/noodles_training
+project: C:\Users\abdul\Desktop\noodels\data\noodles_training
 name: phase1_synthetic
 exist_ok: true
 pretrained: true
@@ -80,6 +80,7 @@ warmup_momentum: 0.8
 warmup_bias_lr: 0.1
 box: 7.5
 cls: 0.5
+cls_pw: 0.0
 dfl: 1.5
 pose: 12.0
 kobj: 1.0
@@ -106,4 +107,4 @@ auto_augment: randaugment
 erasing: 0.4
 cfg: null
 tracker: botsort.yaml
-save_dir: /home/salumi/projects/project/data/noodles_training/phase1_synthetic
+save_dir: C:\Users\abdul\Desktop\noodels\data\noodles_training\phase1_synthetic

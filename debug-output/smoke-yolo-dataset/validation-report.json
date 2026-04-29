@@ -1,0 +1,182 @@
+{
+  "class_histogram": {
+    "0": 2,
+    "1": 5,
+    "2": 2,
+    "3": 1,
+    "4": 2,
+    "5": 5,
+    "6": 1,
+    "7": 2,
+    "8": 4,
+    "9": 3,
+    "10": 1,
+    "11": 10,
+    "13": 210
+  },
+  "dataset_dir": "C:\\Users\\abdul\\Desktop\\noodels\\debug-output\\smoke-yolo-dataset",
+  "errors": [],
+  "passed": true,
+  "rules": {
+    "allowed_class_ids": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      13
+    ],
+    "coord_range": [
+      0.0,
+      1.0
+    ],
+    "expected_counts": {
+      "train": 8,
+      "val": 2
+    },
+    "requires_class_11": true,
+    "requires_class_13": true
+  },
+  "splits": {
+    "train": {
+      "expected": 8,
+      "images_found": 8,
+      "label_files": [
+        {
+          "class_counts": {
+            "7": 1,
+            "8": 1,
+            "11": 1,
+            "13": 21
+          },
+          "line_errors": [],
+          "lines": 24,
+          "name": "000000.txt"
+        },
+        {
+          "class_counts": {
+            "2": 1,
+            "5": 1,
+            "9": 1,
+            "10": 1,
+            "11": 1,
+            "13": 21
+          },
+          "line_errors": [],
+          "lines": 26,
+          "name": "000001.txt"
+        },
+        {
+          "class_counts": {
+            "1": 1,
+            "4": 1,
+            "11": 1,
+            "13": 21
+          },
+          "line_errors": [],
+          "lines": 24,
+          "name": "000002.txt"
+        },
+        {
+          "class_counts": {
+            "5": 1,
+            "9": 1,
+            "11": 1,
+            "13": 21
+          },
+          "line_errors": [],
+          "lines": 24,
+          "name": "000003.txt"
+        },
+        {
+          "class_counts": {
+            "0": 1,
+            "1": 1,
+            "4": 1,
+            "5": 1,
+            "6": 1,
+            "7": 1,
+            "11": 1,
+            "13": 21
+          },
+          "line_errors": [],
+          "lines": 28,
+          "name": "000004.txt"
+        },
+        {
+          "class_counts": {
+            "2": 1,
+            "8": 1,
+            "11": 1,
+            "13": 21
+          },
+          "line_errors": [],
+          "lines": 24,
+          "name": "000005.txt"
+        },
+        {
+          "class_counts": {
+            "1": 1,
+            "5": 1,
+            "8": 1,
+            "9": 1,
+            "11": 1,
+            "13": 21
+          },
+          "line_errors": [],
+          "lines": 26,
+          "name": "000006.txt"
+        },
+        {
+          "class_counts": {
+            "3": 1,
+            "5": 1,
+            "11": 1,
+            "13": 21
+          },
+          "line_errors": [],
+          "lines": 24,
+          "name": "000007.txt"
+        }
+      ],
+      "labels_found": 8
+    },
+    "val": {
+      "expected": 2,
+      "images_found": 2,
+      "label_files": [
+        {
+          "class_counts": {
+            "1": 1,
+            "8": 1,
+            "11": 1,
+            "13": 21
+          },
+          "line_errors": [],
+          "lines": 24,
+          "name": "000008.txt"
+        },
+        {
+          "class_counts": {
+            "0": 1,
+            "1": 1,
+            "11": 1,
+            "13": 21
+          },
+          "line_errors": [],
+          "lines": 24,
+          "name": "000009.txt"
+        }
+      ],
+      "labels_found": 2
+    }
+  },
+  "warnings": []
+}

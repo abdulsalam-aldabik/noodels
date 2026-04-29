@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { NoodlesBoard } from "../engine/board";
 import { IQ_NOODLES_PIECES, POSITIONS_AROUND_PINS } from "../engine/constants";
@@ -11,14 +11,32 @@ import BoardCanvas from "../ui/BoardCanvas";
 import ControlBar from "../ui/ControlBar";
 import DebugPanel from "../ui/DebugPanel";
 import PieceInventory from "../ui/PieceInventory";
+import TouchPiecePicker from "../ui/TouchPiecePicker";
 import SharedInventoryCanvas from "../rendering/SharedInventoryCanvas";
 import { useOrientations } from "../hooks/useOrientations";
 import { usePlacementFinder } from "../hooks/usePlacementFinder";
 import { useSolver } from "../hooks/useSolver";
+import CameraCaptureView from "./CameraCaptureView";
 import CaptureView from "./CaptureView";
-import type { ScanResult } from "../vision/visionTypes";
 
 import "../styles/app.css";
+
+const PHONE_MEDIA_QUERY = "(max-width: 900px)";
+
+function useIsPhone(): boolean {
+  const [isPhone, setIsPhone] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.matchMedia(PHONE_MEDIA_QUERY).matches;
+  });
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mql = window.matchMedia(PHONE_MEDIA_QUERY);
+    const onChange = (e: MediaQueryListEvent) => setIsPhone(e.matches);
+    mql.addEventListener("change", onChange);
+    return () => mql.removeEventListener("change", onChange);
+  }, []);
+  return isPhone;
+}
 
 export default function IQNoodlesApp() {
   const board = useMemo(() => new NoodlesBoard(), []);
@@ -66,7 +84,11 @@ export default function IQNoodlesApp() {
 
   // ── App mode ─────────────────────────────────────────────────────────────
 
-  const [mode, setMode] = useState<"manual" | "scan">("manual");
+  const isPhone = useIsPhone();
+  const [mode, setMode] = useState<"manual" | "scan">(() => {
+    if (typeof window === "undefined") return "manual";
+    return window.matchMedia(PHONE_MEDIA_QUERY).matches ? "scan" : "manual";
+  });
 
   // ── Core state ───────────────────────────────────────────────────────────
 
@@ -75,6 +97,7 @@ export default function IQNoodlesApp() {
   const [hoverPoint, setHoverPoint] = useState<{ x: number; y: number } | null>(null);
   const [showDebug, setShowDebug] = useState(false);
   const [debugPlacementInfo, setDebugPlacementInfo] = useState("");
+
   // pieceId → orientationIndex → {x, y, scale} offset overrides (from debug panel nudges)
   const [offsetOverrides, setOffsetOverrides] = useState<
     Record<number, Record<number, { x: number; y: number; scale: number }>>
@@ -82,7 +105,7 @@ export default function IQNoodlesApp() {
 
   // ── Orientation management ───────────────────────────────────────────────
 
-  const { placementsByPiece, findBestPlacement, getFreePlacements, countFreePlacementsByOrientation } =
+  const { placementsByPiece, findBestPlacement, getFreePlacements } =
     usePlacementFinder(board, coordinator);
 
   const {
@@ -122,114 +145,76 @@ export default function IQNoodlesApp() {
       delete next[pieceId];
       return next;
     });
-    setSelectedPieceId(pieceId);
   }
 
-  function buildInitialPlacements(): Map<number, PiecePlacement> {
+  function clearBoard(): void {
+    setPlacedByPiece({});
+    setDebugPlacementInfo("Board cleared.");
+  }
+
+  // ── Solver ───────────────────────────────────────────────────────────────
+
+  const getInitialPlacements = () => {
     const map = new Map<number, PiecePlacement>();
     for (const [id, placement] of Object.entries(placedByPiece)) {
       map.set(Number(id), placement);
     }
     return map;
-  }
+  };
 
-  // ── Solver ───────────────────────────────────────────────────────────────
-
-  const { solverStatus, clearStatus, onSolve, onValidate, onHint } = useSolver(
-    buildInitialPlacements,
-    (solution) => setPlacedByPiece(solution),
-    (pieceId, placement) => setPlacedByPiece((prev) => ({ ...prev, [pieceId]: placement })),
+  const { solverStatus, onValidate, onSolve, onHint } = useSolver(
+    getInitialPlacements,
+    (placements) => setPlacedByPiece(placements),
+    (pieceId, placement) => applyPlacement(pieceId, placement, orientationByPiece[pieceId]),
   );
 
-  function clearBoard(): void {
-    setPlacedByPiece({});
-    clearStatus();
-  }
+  // ── Board interaction ────────────────────────────────────────────────────
 
-  // ── Scan completion handler ───────────────────────────────────────────────
-
-  function onScanComplete(result: Extract<ScanResult, { ok: true }>): void {
-    // Merge scanned placements on top of any manually placed pieces.
-    // Scanned pieces take precedence for the same pieceId.
-    const next: Record<number, PiecePlacement> = { ...placedByPiece };
-    for (const [pieceId, placement] of result.confirmedPlacements) {
-      next[pieceId] = placement;
-    }
-    setPlacedByPiece(next);
-    // Pre-select the hinted piece so the user can place it immediately
-    if (result.hint) {
-      setSelectedPieceId(result.hint.nextPieceId);
-    }
-    setMode("manual");
-  }
-
-  // ── Hover preview ────────────────────────────────────────────────────────
-
-  const previewPlacement = useMemo(() => {
+  const previewPlacement = useMemo((): PiecePlacement | null => {
     if (!hoverPoint) return null;
-    const { row, col } = coordinator.boardPointToRowCol(hoverPoint);
-    return findBestPlacement(
+    // Convert hover point (SVG coords) to row/col for findBestPlacement
+    const targetRow = hoverPoint.y / (coordinator.boardSize / (board.height - 1));
+    const targetCol = hoverPoint.x / (coordinator.boardSize / (board.width - 1));
+    const result = findBestPlacement(
       selectedPieceId,
       orientationByPiece[selectedPieceId],
-      row,
-      col,
-      occupiedByOthers,
-    );
-  }, [hoverPoint, coordinator, findBestPlacement, selectedPieceId, orientationByPiece, occupiedByOthers]);
-
-  // ── Board pointer events ─────────────────────────────────────────────────
-
-  function mapPointerToBoard(event: React.PointerEvent<HTMLDivElement>) {
-    const rect = event.currentTarget.getBoundingClientRect();
-    return coordinator.domToBoardPoint(event.clientX, event.clientY, rect.left, rect.top, rect.width, rect.height);
-  }
-
-  function onBoardPointerMove(event: React.PointerEvent<HTMLDivElement>): void {
-    setHoverPoint(mapPointerToBoard(event));
-  }
-
-  function onBoardClick(event: React.PointerEvent<HTMLDivElement>): void {
-    const boardPt = mapPointerToBoard(event);
-    const { row: targetRow, col: targetCol } = coordinator.boardPointToRowCol(boardPt);
-    const selectedOrientation = orientationByPiece[selectedPieceId];
-
-    const candidate = findBestPlacement(
-      selectedPieceId,
-      selectedOrientation,
       targetRow,
       targetCol,
       occupiedByOthers,
-      true,
     );
+    return result;
+  }, [hoverPoint, selectedPieceId, orientationByPiece, occupiedByOthers, findBestPlacement, coordinator, board]);
 
-    if (showDebug) {
-      const rect = event.currentTarget.getBoundingClientRect();
-      const freeByOrientation = countFreePlacementsByOrientation(selectedPieceId, occupiedByOthers);
-      const counts = Object.entries(freeByOrientation).map(([k, v]) => `${k}:${v}`).join(" ");
-      setDebugPlacementInfo([
-        `piece=${PIECE_ASSET_BY_ID[selectedPieceId].key}(${selectedPieceId}) selectedOrientation=${selectedOrientation}`,
-        `svgRect=${rect.width.toFixed(1)}x${rect.height.toFixed(1)} boardSize=${coordinator.boardSize}`,
-        `local=(${boardPt.x.toFixed(1)}, ${boardPt.y.toFixed(1)}) target=(${targetRow.toFixed(2)}, ${targetCol.toFixed(2)})`,
-        `freeCandidatesByOrientation=${counts || "none"}`,
-        `result=${candidate ? `ok orientation=${candidate.orientationIndex}` : "none"}`,
-      ].join("\n"));
-    }
-
-    if (candidate) applyPlacement(selectedPieceId, candidate, selectedOrientation);
+  function onBoardPointerMove(event: React.PointerEvent<HTMLDivElement>) {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const normX = (event.clientX - rect.left) / rect.width;
+    const normY = (event.clientY - rect.top) / rect.height;
+    setHoverPoint({
+      x: normX * coordinator.boardSize,
+      y: normY * coordinator.boardSize,
+    });
   }
 
-  // ── Place First Fit ──────────────────────────────────────────────────────
+  function onBoardClick() {
+    if (!previewPlacement) return;
 
-  function placeFirstFit(): void {
     const selectedOrientation = orientationByPiece[selectedPieceId];
-    const free = getFreePlacements(selectedPieceId, occupiedByOthers);
-    const byOrientation = free.reduce<Record<number, PiecePlacement[]>>((acc, p) => {
-      if (!acc[p.orientationIndex]) acc[p.orientationIndex] = [];
-      acc[p.orientationIndex].push(p);
-      return acc;
-    }, {});
-
-    const candidate = byOrientation[selectedOrientation]?.[0] ?? Object.values(byOrientation).flat()[0] ?? null;
+    const { candidate, byOrientation } = (() => {
+      const freePlacements = getFreePlacements(selectedPieceId, occupiedByOthers);
+      const byOrientation: Record<number, PiecePlacement[]> = {};
+      for (const p of freePlacements) {
+        const oi = p.orientationIndex;
+        if (!byOrientation[oi]) byOrientation[oi] = [];
+        byOrientation[oi].push(p);
+      }
+      const candidates = byOrientation[selectedOrientation] ?? [];
+      const match = candidates.find(
+        (p) =>
+          p.positions.length === previewPlacement.positions.length &&
+          p.positions.every((pos, i) => pos === previewPlacement.positions[i]),
+      );
+      return { candidate: match, byOrientation };
+    })();
 
     if (showDebug) {
       const counts = Object.entries(byOrientation).map(([k, v]) => `${k}:${v.length}`).join(" ");
@@ -241,6 +226,29 @@ export default function IQNoodlesApp() {
     }
 
     if (candidate) applyPlacement(selectedPieceId, candidate, selectedOrientation);
+  }
+
+  // ── Place first fit (auto) ──────────────────────────────────────────────
+
+  function placeFirstFit(): void {
+    const selectedOrientation = orientationByPiece[selectedPieceId];
+    const freePlacements = getFreePlacements(selectedPieceId, occupiedByOthers);
+    const candidates = freePlacements.filter(
+      (p) => p.orientationIndex === selectedOrientation,
+    );
+    if (candidates.length > 0) {
+      applyPlacement(selectedPieceId, candidates[0], selectedOrientation);
+    }
+  }
+
+  // ── Scan complete handler ───────────────────────────────────────────────
+
+  function onScanComplete(confirmedPlacements: Map<number, PiecePlacement>): void {
+    clearBoard();
+    for (const [pieceId, placement] of confirmedPlacements) {
+      applyPlacement(pieceId, placement, placement.orientationIndex);
+    }
+    setMode("manual");
   }
 
   // ── Debug offset nudges ──────────────────────────────────────────────────
@@ -291,7 +299,6 @@ export default function IQNoodlesApp() {
       const pieceId = Number(id);
 
       // Compute the 3D center as the midpoint of the two most-distant gripping pins.
-      // This ensures we anchor to connector pins, not pass-through pins.
       const touchedPins = new Map<number, [number, number]>();
       for (const pos of placement.positions) {
         const pinIndex = positionToPinIndex.get(pos);
@@ -360,7 +367,83 @@ export default function IQNoodlesApp() {
 
   // ── Render ────────────────────────────────────────────────────────────────
 
-  // Scan mode takes over the full shell
+  if (isPhone) {
+    if (mode === "scan") {
+      return (
+        <>
+          <SharedInventoryCanvas />
+          <div className="noodles-shell is-mobile">
+            <CameraCaptureView
+              onScanComplete={onScanComplete}
+              onOpenManual={() => setMode("manual")}
+            />
+          </div>
+        </>
+      );
+    }
+
+    return (
+      <>
+        <SharedInventoryCanvas />
+        <div className="noodles-shell is-mobile">
+          <div className="mobile-manual">
+            <div className="mobile-manual-topbar">
+              <button
+                type="button"
+                className="camera-chip"
+                onClick={() => setMode("scan")}
+                aria-label="Back to camera"
+              >
+                ← Camera
+              </button>
+              <span className="mobile-manual-title">Manual</span>
+              <div className="mobile-manual-topbar-actions">
+                <button type="button" className="camera-chip" onClick={onHint} aria-label="Hint">
+                  Hint
+                </button>
+                <button type="button" className="camera-chip" onClick={onSolve} aria-label="Solve">
+                  Solve
+                </button>
+                <button type="button" className="camera-chip" onClick={clearBoard} aria-label="Clear board">
+                  Clear
+                </button>
+              </div>
+            </div>
+
+            <div className="mobile-manual-board">
+              <BoardCanvas
+                coordinator={coordinator}
+                boardCells={boardCells}
+                pinCenters={pinCenters}
+                placedCells={placedCells}
+                placedModels={placedModels}
+                previewPlacement={previewPlacement}
+                selectedPieceId={selectedPieceId}
+                showDebug={showDebug}
+                placedByPiece={placedByPiece}
+                onPointerMove={onBoardPointerMove}
+                onPointerLeave={() => setHoverPoint(null)}
+                onPointerDown={onBoardClick}
+              />
+            </div>
+
+            {solverStatus && <div className="mobile-manual-status">{solverStatus}</div>}
+
+            <TouchPiecePicker
+              pieceStats={pieceStats}
+              selectedPieceId={selectedPieceId}
+              onSelect={setSelectedPieceId}
+              onRotate={rotate}
+              onFlip={flip}
+              onPickUp={removePiece}
+            />
+          </div>
+        </div>
+      </>
+    );
+  }
+
+  // Desktop: unchanged layout
   if (mode === "scan") {
     return (
       <>
