@@ -112,6 +112,74 @@ function getReferenceColors(): {
   return { pieces: _referenceColors, board: _boardLab!, pin: _pinLab! };
 }
 
+// ── White-balance normalization ─────────────────────────────────────────────
+
+/**
+ * Sample the dark-plastic frame visible at {@link MISSING_POSITIONS} cells
+ * (the diamond cutouts of an IQ Noodles board), compute its mean RGB, and
+ * apply per-channel scale so that mean → {@link BOARD_RGB}. Mutates the
+ * canvas in place. No-op when the sample is implausible (too bright, too
+ * dark, or saturated), to avoid worsening already-clean captures.
+ *
+ * Why MISSING_POSITIONS: those cells are physically present on the board but
+ * outside the playable diamond, so they're guaranteed to show frame plastic
+ * (no piece can occupy them). They are the most reliable WB anchor.
+ */
+export function whiteBalanceRectifiedCanvas(canvas: HTMLCanvasElement): void {
+  const w = canvas.width;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) return;
+  const imageData = ctx.getImageData(0, 0, w, w);
+  const data = imageData.data;
+
+  const cellSpacing = w / BOARD_EDGE_SPAN;
+  const patchRadius = Math.max(2, Math.floor(cellSpacing * 0.3));
+
+  let sumR = 0, sumG = 0, sumB = 0, n = 0;
+  for (const cellIndex of MISSING_POSITIONS) {
+    const row = Math.floor(cellIndex / BOARD_WIDTH);
+    const col = cellIndex % BOARD_WIDTH;
+    const cp = boardToCanvas(col, row, w);
+    const cx = Math.round(cp.x);
+    const cy = Math.round(cp.y);
+
+    for (let dy = -patchRadius; dy <= patchRadius; dy++) {
+      for (let dx = -patchRadius; dx <= patchRadius; dx++) {
+        const px = cx + dx;
+        const py = cy + dy;
+        if (px < 0 || px >= w || py < 0 || py >= w) continue;
+        const idx = (py * w + px) * 4;
+        sumR += data[idx];
+        sumG += data[idx + 1];
+        sumB += data[idx + 2];
+        n++;
+      }
+    }
+  }
+  if (n === 0) return;
+
+  const meanR = sumR / n;
+  const meanG = sumG / n;
+  const meanB = sumB / n;
+  const meanLum = (meanR + meanG + meanB) / 3;
+  // Sample is implausible: corner cells show piece colors (rectification off)
+  // or pure black (rectification overshot the board). Skip rather than
+  // amplify noise.
+  if (meanLum > 90 || meanLum < 5) return;
+
+  const clamp = (s: number) => Math.max(0.5, Math.min(2, s));
+  const scaleR = clamp(BOARD_RGB[0] / Math.max(1, meanR));
+  const scaleG = clamp(BOARD_RGB[1] / Math.max(1, meanG));
+  const scaleB = clamp(BOARD_RGB[2] / Math.max(1, meanB));
+
+  for (let i = 0; i < data.length; i += 4) {
+    data[i] = Math.min(255, data[i] * scaleR);
+    data[i + 1] = Math.min(255, data[i + 1] * scaleG);
+    data[i + 2] = Math.min(255, data[i + 2] * scaleB);
+  }
+  ctx.putImageData(imageData, 0, 0);
+}
+
 // ── Cell color sampling ─────────────────────────────────────────────────────
 
 export interface CellColorSample {
@@ -162,6 +230,15 @@ const MIN_PIECE_LIGHTNESS = 22;
 const PIECE_VS_BOARD_MARGIN = 8;
 /** Patch half-size: sample a (2*PATCH+1)×(2*PATCH+1) area at each cell center. */
 const PATCH = 4;
+/**
+ * Specular-highlight cutoff. Pixels brighter than this in luminance, or with
+ * all three channels above {@link HIGHLIGHT_MIN_CHANNEL}, are dropped from the
+ * chromatic-pixel pool. Their saturation is technically computable but
+ * unreliable — clipped sensors lose color information that would otherwise
+ * contaminate the median.
+ */
+const HIGHLIGHT_MAX_LUM = 245;
+const HIGHLIGHT_MIN_CHANNEL = 240;
 
 /**
  * Sample the rectified canvas at each valid board cell and classify by color.
@@ -203,6 +280,7 @@ export function classifyCellsByColor(
 
       // Collect all pixel colors in the patch.
       const pixelColors: Array<{ r: number; g: number; b: number; sat: number; lum: number }> = [];
+      const clipped: Array<{ r: number; g: number; b: number; sat: number; lum: number }> = [];
 
       for (let dy = -patchRadius; dy <= patchRadius; dy++) {
         for (let dx = -patchRadius; dx <= patchRadius; dx++) {
@@ -218,8 +296,20 @@ export function classifyCellsByColor(
           const lum = (maxC + minC) / 2;
           const sat = maxC > 0 ? (maxC - minC) / maxC : 0;
 
+          // Drop near-clipped highlights — specular reflections corrupt the
+          // median for the cell beneath them.
+          if (lum > HIGHLIGHT_MAX_LUM || minC > HIGHLIGHT_MIN_CHANNEL) {
+            clipped.push({ r, g, b, sat, lum });
+            continue;
+          }
           pixelColors.push({ r, g, b, sat, lum });
         }
+      }
+
+      // If everything is clipped (cell entirely under a highlight), fall back
+      // to the original pool so the cell still has a sample.
+      if (pixelColors.length === 0 && clipped.length > 0) {
+        pixelColors.push(...clipped);
       }
 
       if (pixelColors.length === 0) continue;

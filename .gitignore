@@ -64,6 +64,9 @@ archive/
 node_modules/
 webapp-v2/dist/
 
+# Phone debug captures (auto-saved by webapp-v4 dev server — see vite.config.ts)
+phone-debug/
+
 # Misc
 tree_device*.txt
 *.bak

@@ -5,7 +5,11 @@ import { ScanPipeline } from "../pipeline/ScanPipeline";
 import type { ScanResult } from "../pipeline/types";
 
 import BoardGhostOverlay from "./BoardGhostOverlay";
+import { uploadDebugBundle } from "./debugSave";
 import { buildConfirmedPlacements, countConfirmable } from "./scanConfirm";
+
+/** Capture downscale target — see Change 2 in the capture canvas below. */
+const CAPTURE_MAX_LONG_EDGE = 1920;
 
 type Phase = "starting" | "live" | "loading" | "scanning" | "review";
 
@@ -16,7 +20,8 @@ interface CaptureDiagnostics {
   capturedWidth: number;
   capturedHeight: number;
   viewportPortrait: boolean;
-  rotationApplied: 0 | 90;
+  rotationApplied: -90 | 0 | 90;
+  screenAngle: number;
   jpegBytes: number;
   totalMs: number;
 }
@@ -169,28 +174,51 @@ export default function CameraCaptureView({
     //    (hinge at top of the *viewport*), so the captured image must be
     //    rotated to match what the user saw. Otherwise the hinge ends up on
     //    the side of the JPEG and BoardLocator's orientation logic fails.
+    //
+    //    Direction of rotation depends on which way the phone is held:
+    //    screen.orientation.angle === 270 (landscape, top-of-screen on the
+    //    left) needs CCW rotation; angle === 90 needs CW. When held in
+    //    natural portrait (angle === 0), default to CW which matches the
+    //    most common Android sensor orientation.
     const viewportPortrait = window.innerHeight > window.innerWidth;
     const captureLandscape = frameW > frameH;
+    const screenAngle = (typeof screen !== "undefined" && screen.orientation)
+      ? screen.orientation.angle
+      : (globalThis as unknown as { orientation?: number }).orientation ?? 0;
     let rotationApplied: CaptureDiagnostics["rotationApplied"] = 0;
-    if (viewportPortrait && captureLandscape) rotationApplied = 90;
-    else if (!viewportPortrait && !captureLandscape) rotationApplied = 90;
+    if (viewportPortrait !== captureLandscape) {
+      // viewport-orientation and capture-orientation disagree → rotate.
+      rotationApplied = screenAngle === 270 ? -90 : 90;
+    }
+
+    // Downsample so the long edge is at most CAPTURE_MAX_LONG_EDGE px. The YOLO
+    // model letterboxes to 640², so ~2 megapixel input is plenty — going higher
+    // shrinks small features (especially the 21 board pins) below the model's
+    // receptive field on 4K phone captures, which collapses pin-anchored
+    // homography matching into the less-accurate corner fallback.
+    const s = Math.min(1, CAPTURE_MAX_LONG_EDGE / Math.max(frameW, frameH));
+    const scaledW = Math.round(frameW * s);
+    const scaledH = Math.round(frameH * s);
 
     const canvas = document.createElement("canvas");
-    if (rotationApplied === 90) {
-      canvas.width = frameH;
-      canvas.height = frameW;
+    if (rotationApplied === 0) {
+      canvas.width = scaledW;
+      canvas.height = scaledH;
     } else {
-      canvas.width = frameW;
-      canvas.height = frameH;
+      canvas.width = scaledH;
+      canvas.height = scaledW;
     }
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
     if (rotationApplied === 90) {
-      ctx.translate(frameH, 0);
+      ctx.translate(scaledH, 0);
       ctx.rotate(Math.PI / 2);
+    } else if (rotationApplied === -90) {
+      ctx.translate(0, scaledW);
+      ctx.rotate(-Math.PI / 2);
     }
-    ctx.drawImage(frameBitmap as CanvasImageSource, 0, 0, frameW, frameH);
+    ctx.drawImage(frameBitmap as CanvasImageSource, 0, 0, frameW, frameH, 0, 0, scaledW, scaledH);
 
     // Release the ImageBitmap if we allocated one
     if (frameBitmap instanceof ImageBitmap) frameBitmap.close();
@@ -211,6 +239,7 @@ export default function CameraCaptureView({
       capturedHeight: canvas.height,
       viewportPortrait,
       rotationApplied,
+      screenAngle,
       jpegBytes: blob.size,
       totalMs: Math.round(performance.now() - t0),
     };
@@ -226,16 +255,29 @@ export default function CameraCaptureView({
     // Freeze camera while scanning
     stopStream();
 
+    let result: ScanResult | null = null;
+    let scanErrorMessage: string | null = null;
     try {
       const pipeline = await ensurePipeline();
       setPhase("scanning");
       const img = await loadImage(url);
-      const result = await pipeline.run(img);
+      result = await pipeline.run(img);
       setScanResult(result);
       setPhase("review");
     } catch (err) {
-      setScanError((err as Error).message);
+      scanErrorMessage = (err as Error).message;
+      setScanError(scanErrorMessage);
       setPhase("review");
+    }
+
+    // Dev-only: ship the captured JPEG + every scan artifact to
+    // <projectRoot>/phone-debug/<bundle>/. The Vite middleware in
+    // vite.config.ts handles the write. Failures are logged and ignored —
+    // the scan UI is unaffected.
+    if (import.meta.env.DEV) {
+      uploadDebugBundle(blob, result, { ...diag, scanError: scanErrorMessage })
+        .then((bundle) => console.info("[debug-save] saved bundle", bundle))
+        .catch((err) => console.warn("[debug-save] failed", err));
     }
   }, [capturedUrl, ensurePipeline, stopStream]);
 
@@ -327,8 +369,8 @@ export default function CameraCaptureView({
           )}
           {!scanError && !isSuccess && (
             <div className="camera-error-card">
-              <strong>Board not detected</strong>
-              <p>Make sure the full board is in the ghost outline and the photo is well-lit.</p>
+              <strong>{diagnoseFailure(scanResult).title}</strong>
+              <p>{diagnoseFailure(scanResult).hint}</p>
             </div>
           )}
           {!scanError && isSuccess && scanResult && (
@@ -365,6 +407,7 @@ export default function CameraCaptureView({
                   </div>
                   <div>
                     Viewport: {diagnostics.viewportPortrait ? "portrait" : "landscape"} ·
+                    Screen: {diagnostics.screenAngle}° ·
                     Rotation: {diagnostics.rotationApplied}° ·
                     JPEG: {(diagnostics.jpegBytes / 1024).toFixed(0)} KB
                   </div>
@@ -463,6 +506,60 @@ export default function CameraCaptureView({
       )}
     </div>
   );
+}
+
+/**
+ * Map the scan telemetry to actionable user copy. Each branch keys off a
+ * distinct failure signal so retakes target the actual problem rather than
+ * the generic "board not detected".
+ */
+function diagnoseFailure(result: ScanResult | null): { title: string; hint: string } {
+  if (!result) {
+    return {
+      title: "Board not detected",
+      hint: "Make sure the full board is in the ghost outline and the photo is well-lit.",
+    };
+  }
+  const detections = result.inference.detections.length;
+  const loc = result.telemetry.localization;
+  const placed = result.boardState?.placements.length ?? 0;
+  const unassigned = result.telemetry.mapping.unassigned;
+  const matchedPins = loc.pin?.matchedPinCount ?? 0;
+
+  if (detections === 0) {
+    return {
+      title: "Board not visible",
+      hint: "Improve lighting or move closer — nothing was detected in the frame.",
+    };
+  }
+  if (loc.status === "failed") {
+    return {
+      title: "Board not detected",
+      hint: "Center the full board inside the on-screen outline and try again.",
+    };
+  }
+  if (matchedPins > 0 && matchedPins < 8) {
+    return {
+      title: "Few pins visible",
+      hint: `Only ${matchedPins} of 21 pins matched — move closer or reduce glare.`,
+    };
+  }
+  if (loc.cornerScore < 0.55) {
+    return {
+      title: "Board edge unclear",
+      hint: "Hold the phone parallel to the board so all four edges are visible.",
+    };
+  }
+  if (placed < 4 && unassigned > 0) {
+    return {
+      title: "Lighting too uneven",
+      hint: "Try diffuse, even lighting — pieces were detected but couldn't be mapped.",
+    };
+  }
+  return {
+    title: "Not enough pieces detected",
+    hint: "Move closer or adjust lighting and try again.",
+  };
 }
 
 function loadImage(url: string): Promise<HTMLImageElement> {
