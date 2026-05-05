@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { PiecePlacement as EnginePlacement } from "../engine/types";
-import { ScanPipeline } from "../pipeline/ScanPipeline";
 import type { ScanResult } from "../pipeline/types";
+import { getSharedPipeline } from "../pipeline/pipelinePreload";
 
 import BoardGhostOverlay from "./BoardGhostOverlay";
 import CameraFramingOverlay from "./CameraFramingOverlay";
@@ -41,7 +41,6 @@ export default function CameraCaptureView({
 }: Readonly<CameraCaptureViewProps>) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const pipelineRef = useRef<ScanPipeline | null>(null);
   const capturingRef = useRef(false);
 
   const [phase, setPhase] = useState<Phase>("starting");
@@ -128,12 +127,12 @@ export default function CameraCaptureView({
     };
   }, [capturedUrl]);
 
-  const ensurePipeline = useCallback(async (): Promise<ScanPipeline> => {
-    if (pipelineRef.current) return pipelineRef.current;
-    setPhase("loading");
-    const pipeline = new ScanPipeline();
-    await pipeline.ensureLoaded();
-    pipelineRef.current = pipeline;
+  const ensurePipeline = useCallback(async () => {
+    const pipeline = getSharedPipeline();
+    if (!pipeline.isLoaded) {
+      setPhase("loading");
+      await pipeline.ensureLoaded();
+    }
     return pipeline;
   }, []);
 

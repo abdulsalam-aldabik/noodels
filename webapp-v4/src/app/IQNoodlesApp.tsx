@@ -18,6 +18,7 @@ import { usePlacementFinder } from "../hooks/usePlacementFinder";
 import { useSolver } from "../hooks/useSolver";
 import CameraCaptureView from "./CameraCaptureView";
 import CaptureView from "./CaptureView";
+import { getSharedPipeline } from "../pipeline/pipelinePreload";
 
 import "../styles/app.css";
 
@@ -89,6 +90,19 @@ export default function IQNoodlesApp() {
     if (typeof window === "undefined") return "manual";
     return window.matchMedia(PHONE_MEDIA_QUERY).matches ? "scan" : "manual";
   });
+
+  // Idle preload — start loading the ONNX model in the background as soon as
+  // the app is mounted, so there is zero wait when the user taps the shutter.
+  useEffect(() => {
+    const load = () => { getSharedPipeline().ensureLoaded().catch(() => {}); };
+    if (typeof requestIdleCallback !== "undefined") {
+      const id = requestIdleCallback(load, { timeout: 2000 });
+      return () => cancelIdleCallback(id);
+    }
+    // Safari fallback
+    const id = setTimeout(load, 500);
+    return () => clearTimeout(id);
+  }, []);
 
   // ── Core state ───────────────────────────────────────────────────────────
 

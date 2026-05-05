@@ -70,6 +70,10 @@ export class ScanPipeline {
     this.ambiguityPolicy = options.ambiguityPlacementPolicy ?? "off";
   }
 
+  get isLoaded(): boolean {
+    return this.runner.isLoaded;
+  }
+
   async ensureLoaded(): Promise<void> {
     await this.runner.ensureLoaded();
   }

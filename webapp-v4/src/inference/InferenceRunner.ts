@@ -28,11 +28,14 @@ export interface InferenceRunnerOptions {
 /**
  * Thin wrapper around onnxruntime-web that owns the model session and performs
  * a single preprocess -> run -> postprocess pass per image. Session creation is
- * deferred to the first `run()` call so the caller controls initialization
- * timing.
+ * deferred to the first `ensureLoaded()` call so the caller controls timing.
+ *
+ * Concurrent calls to `ensureLoaded()` share a single in-flight promise so the
+ * session is never created twice (important for idle preload + shutter racing).
  */
 export class InferenceRunner {
   private session: ort.InferenceSession | null = null;
+  private loadingPromise: Promise<void> | null = null;
   private readonly modelPath: string;
   private readonly confThreshold: number;
   private readonly iouThreshold: number;
@@ -42,15 +45,42 @@ export class InferenceRunner {
     this.modelPath = options.modelPath ?? DEFAULT_MODEL_PATH;
     this.confThreshold = options.confThreshold ?? DEFAULT_CONF_THRESHOLD;
     this.iouThreshold = options.iouThreshold ?? DEFAULT_IOU_THRESHOLD;
-    this.executionProviders = options.executionProviders ?? ["wasm"];
+    // Default: attempt WebGPU (GPU-accelerated) first, fall back to WASM.
+    this.executionProviders = options.executionProviders ?? ["webgpu", "wasm"];
   }
 
   async ensureLoaded(): Promise<void> {
     if (this.session) return;
-    this.session = await ort.InferenceSession.create(this.modelPath, {
-      executionProviders: this.executionProviders,
-      graphOptimizationLevel: "all",
-    });
+    // Deduplicate: if a load is already in flight, join it rather than spawning
+    // a second InferenceSession.create() — important when preload and shutter
+    // fire concurrently.
+    if (!this.loadingPromise) this.loadingPromise = this._load();
+    return this.loadingPromise;
+  }
+
+  private async _load(): Promise<void> {
+    const opts = { graphOptimizationLevel: "all" as const };
+    // Prefer GPU-accelerated providers; fall back to WASM-only if the first
+    // attempt fails (e.g. WebGPU not supported, GPU driver crash, etc.).
+    const chains: ort.InferenceSession.ExecutionProviderConfig[][] =
+      this.executionProviders.length > 1 && this.executionProviders[0] !== "wasm"
+        ? [this.executionProviders, ["wasm"]]
+        : [this.executionProviders];
+
+    let lastErr: unknown;
+    for (const providers of chains) {
+      try {
+        this.session = await ort.InferenceSession.create(this.modelPath, {
+          ...opts,
+          executionProviders: providers,
+        });
+        return;
+      } catch (err) {
+        console.warn(`[InferenceRunner] provider [${providers.join(",")}] failed:`, err);
+        lastErr = err;
+      }
+    }
+    throw lastErr;
   }
 
   get isLoaded(): boolean {
