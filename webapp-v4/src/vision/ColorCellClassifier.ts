@@ -217,12 +217,12 @@ export interface PieceRegion {
 }
 
 /** Maximum Lab distance to consider a cell as belonging to a piece. */
-const MAX_PIECE_DISTANCE = 55;
+const MAX_PIECE_DISTANCE = 45;
 /**
  * Minimum lightness (Lab L) for a cell to be considered a piece.
  * Board plastic is very dark (L < 25). Pieces are always brighter.
  */
-const MIN_PIECE_LIGHTNESS = 22;
+const MIN_PIECE_LIGHTNESS = 16;
 /**
  * If the cell's nearest piece is closer than board by at least this margin,
  * it's classified as a piece even if the absolute distance is larger.

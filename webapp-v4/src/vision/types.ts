@@ -64,6 +64,8 @@ export interface PiecePlacement {
   maskCellCoverage?: number;
   canonicalPositions?: number[];
   canonicalOrientationIndex?: number;
+  /** NEW (Task 5): true when placed despite being ambiguous (lenient/off policy). */
+  placedDespiteAmbiguity?: boolean;
 }
 
 export interface PieceMapStats {
@@ -73,11 +75,21 @@ export interface PieceMapStats {
   colorRescueCount: number;
   /** Color-only classes that were dropped because they conflicted with mask placements. */
   droppedColorClassIds: number[];
+  /** NEW (Task 4A): how many duplicate color-rescue class assignments were dropped. */
+  droppedDuplicateCount: number;
+}
+
+export interface UnassignedPiece {
+  classId: number;
+  className: string;
+  reason: "ambiguous" | "duplicate" | "low_confidence";
 }
 
 export interface BoardState {
   placements: PiecePlacement[];
   unassignedDetections: RawDetection[];
+  /** NEW (Task 5): pieces that were detected but not placed, with reasons. */
+  unassignedPieces: UnassignedPiece[];
   stats: PieceMapStats;
 }
 

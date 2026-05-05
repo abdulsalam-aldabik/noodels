@@ -5,6 +5,8 @@ import { ScanPipeline } from "../pipeline/ScanPipeline";
 import type { ScanResult } from "../pipeline/types";
 
 import BoardGhostOverlay from "./BoardGhostOverlay";
+import CameraFramingOverlay from "./CameraFramingOverlay";
+import ScanRetryPrompt from "./ScanRetryPrompt";
 import { uploadDebugBundle } from "./debugSave";
 import { buildConfirmedPlacements, countConfirmable } from "./scanConfirm";
 
@@ -40,6 +42,7 @@ export default function CameraCaptureView({
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const pipelineRef = useRef<ScanPipeline | null>(null);
+  const capturingRef = useRef(false);
 
   const [phase, setPhase] = useState<Phase>("starting");
   const [error, setError] = useState<string | null>(null);
@@ -48,6 +51,8 @@ export default function CameraCaptureView({
   const [scanError, setScanError] = useState<string | null>(null);
   const [diagnostics, setDiagnostics] = useState<CaptureDiagnostics | null>(null);
   const [showDetails, setShowDetails] = useState(false);
+  /** Task 6A: framing overlay dismissed flag (in-memory, not localStorage). */
+  const [framingDismissed, setFramingDismissed] = useState(false);
 
   // ── Camera lifecycle ────────────────────────────────────────────────────
 
@@ -135,14 +140,18 @@ export default function CameraCaptureView({
   // ── Shutter ─────────────────────────────────────────────────────────────
 
   const handleShutter = useCallback(async () => {
+    if (capturingRef.current) return;
     const video = videoRef.current;
     const stream = streamRef.current;
     if (!video || !stream || video.readyState < 2) return;
 
+    capturingRef.current = true;
+    const track = stream.getVideoTracks()[0];
+
     const t0 = performance.now();
     const streamW = video.videoWidth;
     const streamH = video.videoHeight;
-    if (!streamW || !streamH) return;
+    if (!streamW || !streamH) { capturingRef.current = false; return; }
 
     // 1) Try a full-resolution still via ImageCapture.takePhoto when the
     //    browser supports it (Chrome/Android, Safari 16.4+). Falls back to
@@ -151,7 +160,6 @@ export default function CameraCaptureView({
     let frameW = streamW;
     let frameH = streamH;
     let source: CaptureDiagnostics["source"] = "canvas.drawImage";
-    const track = stream.getVideoTracks()[0];
     const AnyImageCapture = (window as unknown as { ImageCapture?: typeof ImageCapture }).ImageCapture;
     if (track && AnyImageCapture) {
       try {
@@ -168,28 +176,14 @@ export default function CameraCaptureView({
       }
     }
 
-    // 2) Orientation correction. Mobile browsers often report the camera's
-    //    native sensor dimensions (landscape) even when the phone is held
-    //    portrait. The user lines the board up against the on-screen ghost
-    //    (hinge at top of the *viewport*), so the captured image must be
-    //    rotated to match what the user saw. Otherwise the hinge ends up on
-    //    the side of the JPEG and BoardLocator's orientation logic fails.
-    //
-    //    Direction of rotation depends on which way the phone is held:
-    //    screen.orientation.angle === 270 (landscape, top-of-screen on the
-    //    left) needs CCW rotation; angle === 90 needs CW. When held in
-    //    natural portrait (angle === 0), default to CW which matches the
-    //    most common Android sensor orientation.
+    // Rotation disabled — capture the image as-is. The board locator and
+    // pin-based homography handle arbitrary orientations without needing
+    // the captured frame to be rotated to match viewport orientation.
     const viewportPortrait = window.innerHeight > window.innerWidth;
-    const captureLandscape = frameW > frameH;
     const screenAngle = (typeof screen !== "undefined" && screen.orientation)
       ? screen.orientation.angle
       : (globalThis as unknown as { orientation?: number }).orientation ?? 0;
-    let rotationApplied: CaptureDiagnostics["rotationApplied"] = 0;
-    if (viewportPortrait !== captureLandscape) {
-      // viewport-orientation and capture-orientation disagree → rotate.
-      rotationApplied = screenAngle === 270 ? -90 : 90;
-    }
+    const rotationApplied: CaptureDiagnostics["rotationApplied"] = 0;
 
     // Downsample so the long edge is at most CAPTURE_MAX_LONG_EDGE px. The YOLO
     // model letterboxes to 640², so ~2 megapixel input is plenty — going higher
@@ -201,23 +195,11 @@ export default function CameraCaptureView({
     const scaledH = Math.round(frameH * s);
 
     const canvas = document.createElement("canvas");
-    if (rotationApplied === 0) {
-      canvas.width = scaledW;
-      canvas.height = scaledH;
-    } else {
-      canvas.width = scaledH;
-      canvas.height = scaledW;
-    }
+    canvas.width = scaledW;
+    canvas.height = scaledH;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    if (rotationApplied === 90) {
-      ctx.translate(scaledH, 0);
-      ctx.rotate(Math.PI / 2);
-    } else if (rotationApplied === -90) {
-      ctx.translate(0, scaledW);
-      ctx.rotate(-Math.PI / 2);
-    }
     ctx.drawImage(frameBitmap as CanvasImageSource, 0, 0, frameW, frameH, 0, 0, scaledW, scaledH);
 
     // Release the ImageBitmap if we allocated one
@@ -279,6 +261,8 @@ export default function CameraCaptureView({
         .then((bundle) => console.info("[debug-save] saved bundle", bundle))
         .catch((err) => console.warn("[debug-save] failed", err));
     }
+
+    capturingRef.current = false;
   }, [capturedUrl, ensurePipeline, stopStream]);
 
   const handleRetake = useCallback(() => {
@@ -291,9 +275,13 @@ export default function CameraCaptureView({
     startStream();
   }, [capturedUrl, startStream]);
 
-  const handleApply = useCallback(() => {
+  const handleApply = useCallback((lowConfidence?: boolean) => {
     if (!scanResult) return;
     const confirmed = buildConfirmedPlacements(scanResult);
+    // Task 6: If lowConfidence flag is set, the solver should be warned.
+    if (lowConfidence) {
+      console.warn("[scan] applying low-confidence scan result — solver may produce incomplete solutions");
+    }
     onScanComplete(confirmed);
   }, [onScanComplete, scanResult]);
 
@@ -301,7 +289,9 @@ export default function CameraCaptureView({
 
   const placedCount = scanResult?.boardState?.placements.length ?? 0;
   const confirmableCount = countConfirmable(scanResult);
-  const isSuccess = !!scanResult && scanResult.status !== "failed" && placedCount > 0;
+  const isSuccess = !!scanResult && scanResult.status !== "failed" && scanResult.status !== "rejected_condition" && placedCount > 0;
+  const retryInfo = scanResult?.retryInfo;
+  const showRetryPrompt = retryInfo?.retryTriggered && phase === "review";
 
   return (
     <div className="camera-view">
@@ -321,6 +311,11 @@ export default function CameraCaptureView({
 
       {/* Ghost overlay — only while live (not while reviewing a captured frame) */}
       {phase === "live" && <BoardGhostOverlay />}
+
+      {/* Task 6A: Framing overlay — shown on live view until dismissed */}
+      {phase === "live" && !framingDismissed && (
+        <CameraFramingOverlay onDismiss={() => setFramingDismissed(true)} />
+      )}
 
       {/* Top bar */}
       <div className="camera-topbar">
@@ -358,8 +353,17 @@ export default function CameraCaptureView({
         </div>
       )}
 
-      {/* Review panel (after capture) */}
-      {phase === "review" && (
+      {/* Task 6B: Retry prompt on detection failure */}
+      {showRetryPrompt && retryInfo && (
+        <ScanRetryPrompt
+          retryInfo={retryInfo}
+          onRetake={handleRetake}
+          onUseAnyway={() => handleApply(true)}
+        />
+      )}
+
+      {/* Review panel (after capture) — only show if no retry prompt */}
+      {phase === "review" && !showRetryPrompt && (
         <div className="camera-review">
           {scanError && (
             <div className="camera-error-card">
@@ -433,6 +437,7 @@ export default function CameraCaptureView({
                       Version: {scanResult.telemetry.localization.version}
                     </div>
                     <div>Corner score: {scanResult.boardRef.cornerScore.toFixed(2)}</div>
+                    <div>Homography condition: {scanResult.telemetry.rectification.homographyCondition.toFixed(0)} {scanResult.telemetry.rectification.homographyGatePassed ? "✓" : "✗ REJECTED"}</div>
                     {scanResult.telemetry.localization.pin && (
                       <div>
                         Pins: matched {scanResult.telemetry.localization.pin.matchedPinCount}
@@ -440,16 +445,22 @@ export default function CameraCaptureView({
                         residual {scanResult.telemetry.localization.pin.residualMeanCells.toFixed(2)} cells
                       </div>
                     )}
+                    {scanResult.telemetry.localization.gridFitResidualMax !== undefined && (
+                      <div>Grid fit residual max: {scanResult.telemetry.localization.gridFitResidualMax.toFixed(3)} cells</div>
+                    )}
                   </div>
                   <div className="camera-details-section">
                     <div className="camera-details-title">Pieces</div>
-                    <div>Mapper: {scanResult.telemetry.mapping.mapperVersion}</div>
+                    <div>Mapper: {scanResult.telemetry.mapping.mapperVersion} · Policy: {scanResult.telemetry.mapping.placementPolicy}</div>
                     <div>Placed ≥ 0.15: {confirmableCount}</div>
                     <div>
                       mask: {scanResult.telemetry.mapping.maskCount} ·
                       color rescue: {scanResult.telemetry.mapping.colorRescueCount} ·
                       unassigned YOLO: {scanResult.telemetry.mapping.unassigned}
                     </div>
+                    {scanResult.telemetry.mapping.droppedDuplicateCount > 0 && (
+                      <div>Dropped duplicates: {scanResult.telemetry.mapping.droppedDuplicateCount}</div>
+                    )}
                     {scanResult.telemetry.mapping.droppedColorClassIds.length > 0 && (
                       <div>
                         Dropped color claims: [
@@ -462,6 +473,8 @@ export default function CameraCaptureView({
                         cls {p.classId} · conf {p.confidence.toFixed(2)} · ori {p.orientation}°
                         {p.mirrored ? " ·m" : ""}
                         {p.source ? ` · ${p.source === "yolo-mask" ? "mask" : "color"}` : ""}
+                        {p.ambiguous ? " · ⚠ ambiguous" : ""}
+                        {p.placedDespiteAmbiguity ? " · placed despite" : ""}
                       </div>
                     ))}
                   </div>
@@ -475,7 +488,7 @@ export default function CameraCaptureView({
               Retake
             </button>
             {isSuccess && (
-              <button type="button" className="camera-btn camera-btn--confirm" onClick={handleApply}>
+              <button type="button" className="camera-btn camera-btn--confirm" onClick={() => handleApply()}>
                 Apply ({confirmableCount})
               </button>
             )}
@@ -530,6 +543,12 @@ function diagnoseFailure(result: ScanResult | null): { title: string; hint: stri
     return {
       title: "Board not visible",
       hint: "Improve lighting or move closer — nothing was detected in the frame.",
+    };
+  }
+  if (result.status === "rejected_condition") {
+    return {
+      title: "Board angle too steep",
+      hint: "Hold the camera directly above the board — the perspective distortion is too high.",
     };
   }
   if (loc.status === "failed") {

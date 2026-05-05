@@ -99,11 +99,6 @@ export function applyHomography(m: number[], x: number, y: number): Point2D {
   return { x: X / W, y: Y / W };
 }
 
-function frobeniusNorm(m: number[]): number {
-  let s = 0;
-  for (const v of m) s += v * v;
-  return Math.sqrt(s);
-}
 
 export interface RectifyOptions {
   canvasSize?: number;
@@ -235,7 +230,7 @@ export function rectify(
   const imgToBoard: Homography = {
     forward,
     inverse,
-    condition: frobeniusNorm(Himg2canvas) * frobeniusNorm(Hcanvas2img),
+    condition: svdConditionNumber3x3(Himg2canvas),
   };
 
   const pinPoints = computePinBoardPoints().map((p) => ({ x: p.x, y: p.y }));
@@ -261,4 +256,70 @@ function multiply3x3(a: number[], b: number[]): number[] {
     }
   }
   return out;
+}
+
+/**
+ * Compute the SVD-based condition number of a 3×3 matrix: σ_max / σ_min.
+ * Uses eigenvalues of M^T·M (which are the squared singular values).
+ * For a well-conditioned homography this is typically < 100; for a
+ * degenerate one (steep angle, bad corners) it's > 5,000.
+ */
+function svdConditionNumber3x3(m: number[]): number {
+  // Compute M^T * M (symmetric 3×3).
+  const mt = transpose3x3(m);
+  const mtm = multiply3x3(mt, m);
+
+  // Find eigenvalues of the symmetric 3×3 matrix using the analytical method.
+  const eigenvalues = symmetricEigenvalues3x3(mtm);
+
+  const maxEig = Math.max(...eigenvalues);
+  const minEig = Math.min(...eigenvalues.filter((e) => e > 1e-15));
+
+  if (minEig <= 1e-15) return Infinity;
+  return Math.sqrt(maxEig / minEig);
+}
+
+function transpose3x3(m: number[]): number[] {
+  return [
+    m[0], m[3], m[6],
+    m[1], m[4], m[7],
+    m[2], m[5], m[8],
+  ];
+}
+
+/**
+ * Analytical eigenvalues of a real symmetric 3×3 matrix.
+ * Uses Cardano's method for the cubic characteristic polynomial.
+ */
+function symmetricEigenvalues3x3(m: number[]): [number, number, number] {
+  const a = m[0], b = m[1], c = m[2];
+  const d = m[4], e = m[5];
+  const f = m[8];
+
+  // Characteristic polynomial: λ³ - p·λ² + q·λ - r = 0
+  const p = a + d + f; // trace
+  const q = a * d + a * f + d * f - b * b - c * c - e * e;
+  const r =
+    a * d * f + 2 * b * e * c - a * e * e - d * c * c - f * b * b; // determinant
+
+  // Solve using Cardano / trigonometric method for 3 real roots.
+  const p3 = p / 3;
+  const q2 = (p * p - 3 * q) / 9;
+  const r2 = (2 * p * p * p - 9 * p * q + 27 * r) / 54;
+
+  if (q2 <= 0) return [p3, p3, p3];
+
+  const sqrtQ2 = Math.sqrt(q2);
+  const sqrtQ2_3 = q2 * sqrtQ2; // q2^(3/2)
+
+  let ratio = r2 / sqrtQ2_3;
+  ratio = Math.max(-1, Math.min(1, ratio)); // clamp for numerical safety
+
+  const theta = Math.acos(ratio);
+
+  const e1 = -2 * sqrtQ2 * Math.cos(theta / 3) + p3;
+  const e2 = -2 * sqrtQ2 * Math.cos((theta + 2 * Math.PI) / 3) + p3;
+  const e3 = -2 * sqrtQ2 * Math.cos((theta - 2 * Math.PI) / 3) + p3;
+
+  return [Math.abs(e1), Math.abs(e2), Math.abs(e3)];
 }

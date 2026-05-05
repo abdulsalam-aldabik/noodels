@@ -1,16 +1,17 @@
 /**
- * PieceMapper — Combined color + YOLO-mask piece placement.
+ * PieceMapper — Color-primary with YOLO priority boosting.
  *
  * Algorithm:
  *   1. Color-classify every board cell (Lab distance to reference colors).
- *   2. For each YOLO piece detection above threshold, warp its mask into
- *      board space and collect the cells it covers.
- *   3. For each piece class, the candidate cell set is the union of color
- *      cells and YOLO-mask cells. This lets YOLO rescue pieces that color
- *      missed (glare, white-balance shift) without losing color's coverage
- *      on tightly-packed boards where masks blur together.
- *   4. Fit against canonical placements (max hit-count wins).
- *   5. Greedy global assignment with conflict resolution.
+ *   2. For each piece class, fit color cells against canonical placements.
+ *   3. YOLO detections boost priority: YOLO-backed candidates win conflicts
+ *      over color-only candidates in greedy assignment.
+ *   4. Greedy global assignment with cell-conflict resolution.
+ *   5. Task 4A: Uniqueness constraint — no duplicate classIds.
+ *   6. Task 5: Ambiguity gating — configurable policy for uncertain pieces.
+ *
+ * Color drives the actual cell occupancy and placement fitting, which produces
+ * correctly-sized cell sets (4-5 cells per piece). YOLO is a tie-breaker only.
  */
 
 import {
@@ -27,19 +28,18 @@ import {
   getPlacementsByClass,
   type PinVisitPlacement,
 } from "./PinPairIndex";
-import { warpMaskToCells } from "./maskToBoardGrid";
 import type {
   BoardState,
   Homography,
   PieceMapStats,
   PieceOrientation,
   PiecePlacement,
+  UnassignedPiece,
 } from "./types";
+import type { AmbiguityPlacementPolicy } from "../pipeline/types";
 
-/** Minimum YOLO score for a detection to contribute mask cells. */
+/** Minimum YOLO score for a detection to boost a class's assignment priority. */
 export const YOLO_PIECE_MIN_SCORE = 0.25;
-/** Below this color-cell count the placement is considered YOLO-rescued. */
-const COLOR_CELL_RESCUE_THRESHOLD = 2;
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -50,8 +50,7 @@ interface CandidateMatch {
   hitRatio: number;
   extraCells: number;
   yoloBacked: boolean;
-  /** True when color found < COLOR_CELL_RESCUE_THRESHOLD cells; cell set was supplied by YOLO mask. */
-  yoloRescued: boolean;
+  yoloScore: number;
   sourceCells: Set<number>;
 }
 
@@ -88,106 +87,63 @@ export function fitBestPlacement(
   return { placement: bestPlacement, hitCount: bestHitCount, extraCells: bestExtra };
 }
 
-/**
- * For each YOLO piece detection above {@link YOLO_PIECE_MIN_SCORE}, project its
- * mask into board space using the supplied homography and collect cells covered
- * above the default coverage threshold. When multiple detections share a class,
- * the union of their cells is taken.
- *
- * Returns an empty map if no homography is supplied — color-only fallback.
- */
-function buildYoloMaskCellsByClass(
-  detections: RawDetection[],
-  homography?: Homography,
-): Map<number, Set<number>> {
-  const out = new Map<number, Set<number>>();
-  if (!homography) return out;
-
-  for (const det of detections) {
-    if (det.classId < 0 || det.classId >= PIECE_CLASS_COUNT) continue;
-    if (det.score < YOLO_PIECE_MIN_SCORE) continue;
-    const warp = warpMaskToCells(det, homography.forward);
-    if (warp.totalCells === 0) continue;
-    let bucket = out.get(det.classId);
-    if (!bucket) { bucket = new Set(); out.set(det.classId, bucket); }
-    for (let i = 0; i < 196; i++) {
-      if (warp.cellMask[i]) bucket.add(i);
-    }
-  }
-  return out;
-}
-
 // ── Main mapper ──────────────────────────────────────────────────────────────
 
 export function mapPiecesToBoardState(
   rectifiedCanvas: HTMLCanvasElement,
   detections: RawDetection[],
-  homography?: Homography,
+  _homography?: Homography,
+  ambiguityPolicy: AmbiguityPlacementPolicy = "off",
 ): BoardState {
-  // Which classes YOLO also detected — used for conflict priority and mask rescue.
-  const yoloClassIds = new Set<number>();
+  // Which classes YOLO detected + their best score — used for priority & confidence.
+  const yoloScoreByClass = new Map<number, number>();
   for (const det of detections) {
     if (det.classId >= 0 && det.classId < PIECE_CLASS_COUNT && det.score >= YOLO_PIECE_MIN_SCORE) {
-      yoloClassIds.add(det.classId);
+      const prev = yoloScoreByClass.get(det.classId) ?? 0;
+      if (det.score > prev) yoloScoreByClass.set(det.classId, det.score);
     }
   }
 
-  // White-balance the rectified canvas using known board-frame regions
-  // (mutates in place). Stabilizes color classification across phone cameras
-  // with different auto-WB behavior.
+  // White-balance the rectified canvas.
   whiteBalanceRectifiedCanvas(rectifiedCanvas);
 
   // Color-classify every board cell.
   const colorResult = classifyCellsByColor(rectifiedCanvas);
 
-  // Group cells by piece class (color-driven).
-  const colorCellsByClass = new Map<number, Set<number>>();
+  // Group cells by piece class (color-driven only).
+  const cellsByClass = new Map<number, Set<number>>();
   for (const cell of colorResult.cells) {
     if (cell.classId < 0) continue;
-    let set = colorCellsByClass.get(cell.classId);
-    if (!set) { set = new Set(); colorCellsByClass.set(cell.classId, set); }
+    let set = cellsByClass.get(cell.classId);
+    if (!set) { set = new Set(); cellsByClass.set(cell.classId, set); }
     set.add(cell.cellIndex);
-  }
-
-  // YOLO-mask rescue: project each piece detection's mask into board space and
-  // collect the cells it covers. This recovers pieces that color missed under
-  // glare or white-balance shift.
-  const yoloCellsByClass = buildYoloMaskCellsByClass(detections, homography);
-
-  // Build the union (color ∪ YOLO mask) cell set per class — the candidate pool.
-  const cellsByClass = new Map<number, { cells: Set<number>; colorCount: number }>();
-  for (const [classId, colorCells] of colorCellsByClass) {
-    cellsByClass.set(classId, { cells: new Set(colorCells), colorCount: colorCells.size });
-  }
-  for (const [classId, maskCells] of yoloCellsByClass) {
-    let entry = cellsByClass.get(classId);
-    if (!entry) {
-      entry = { cells: new Set(), colorCount: 0 };
-      cellsByClass.set(classId, entry);
-    }
-    for (const cell of maskCells) entry.cells.add(cell);
   }
 
   // Best placement per class.
   const candidates: CandidateMatch[] = [];
-  for (const [classId, entry] of cellsByClass) {
-    const fit = fitBestPlacement(classId, entry.cells);
+  for (const [classId, colorCells] of cellsByClass) {
+    const fit = fitBestPlacement(classId, colorCells);
     if (!fit) continue;
+    const yoloScore = yoloScoreByClass.get(classId) ?? 0;
     candidates.push({
       classId,
       placement: fit.placement,
       hitCount: fit.hitCount,
       hitRatio: fit.hitCount / fit.placement.cellSet.size,
       extraCells: fit.extraCells,
-      yoloBacked: yoloClassIds.has(classId),
-      yoloRescued: entry.colorCount < COLOR_CELL_RESCUE_THRESHOLD && yoloCellsByClass.has(classId),
-      sourceCells: entry.cells,
+      yoloBacked: yoloScore > 0,
+      yoloScore,
+      sourceCells: colorCells,
     });
   }
 
-  // YOLO-backed candidates resolve conflicts before color-only ones.
+  // Sort: YOLO-backed first (higher accuracy), then by hitCount, then fewest extra.
+  // Within YOLO-backed, sort by YOLO score (higher = more confident detection).
   candidates.sort((a, b) => {
     if (a.yoloBacked !== b.yoloBacked) return a.yoloBacked ? -1 : 1;
+    if (a.yoloBacked && b.yoloBacked) {
+      if (b.yoloScore !== a.yoloScore) return b.yoloScore - a.yoloScore;
+    }
     if (b.hitCount !== a.hitCount) return b.hitCount - a.hitCount;
     return a.extraCells - b.extraCells;
   });
@@ -195,19 +151,29 @@ export function mapPiecesToBoardState(
   const occupiedCells = new Set<number>();
   const usedClassIds = new Set<number>();
   const placementsOut: PiecePlacement[] = [];
+  const unassignedPieces: UnassignedPiece[] = [];
+  let droppedDuplicateCount = 0;
 
   for (const cand of candidates) {
-    if (usedClassIds.has(cand.classId)) continue;
+    // Task 4A: uniqueness
+    if (usedClassIds.has(cand.classId)) {
+      droppedDuplicateCount++;
+      unassignedPieces.push({
+        classId: cand.classId,
+        className: CLASS_NAMES[cand.classId],
+        reason: "duplicate",
+      });
+      continue;
+    }
+
+    // Cell conflict check
     let collides = false;
     for (const cellKey of cand.placement.cellSet) {
       if (occupiedCells.has(cellKey)) { collides = true; break; }
     }
     if (collides) continue;
 
-    for (const cellKey of cand.placement.cellSet) occupiedCells.add(cellKey);
-    usedClassIds.add(cand.classId);
-
-    // Ambiguity: gap between best and runner-up orientation.
+    // Ambiguity: gap between best and runner-up
     let runnerUpHits = 0;
     for (const pl of getPlacementsByClass(cand.classId)) {
       if (pl === cand.placement) continue;
@@ -218,17 +184,47 @@ export function mapPiecesToBoardState(
     }
     const ambiguous = cand.hitCount - runnerUpHits < 2;
 
+    // Task 5: Ambiguity gating
+    if (ambiguous) {
+      if (ambiguityPolicy === "strict") {
+        unassignedPieces.push({
+          classId: cand.classId,
+          className: CLASS_NAMES[cand.classId],
+          reason: "ambiguous",
+        });
+        continue;
+      }
+      if (ambiguityPolicy === "lenient" && cand.hitRatio < 0.85) {
+        unassignedPieces.push({
+          classId: cand.classId,
+          className: CLASS_NAMES[cand.classId],
+          reason: "ambiguous",
+        });
+        continue;
+      }
+    }
+
+    for (const cellKey of cand.placement.cellSet) occupiedCells.add(cellKey);
+    usedClassIds.add(cand.classId);
+
+    // Confidence: color hit ratio, boosted by YOLO score when available.
+    const baseConf = cand.hitRatio;
+    const conf = cand.yoloBacked
+      ? Math.min(1, baseConf * 0.7 + cand.yoloScore * 0.3)
+      : baseConf;
+
     placementsOut.push({
       classId: cand.classId,
       className: CLASS_NAMES[cand.classId],
       cell: { row: cand.placement.topLeftCell.row, col: cand.placement.topLeftCell.col },
       orientation: rotationToOrientation(cand.placement.rotationSteps),
       mirrored: cand.placement.mirrored,
-      confidence: Math.min(1, cand.hitRatio),
+      confidence: Math.min(1, conf),
       ambiguous,
-      source: cand.yoloRescued ? "yolo-mask" : "color-rescue",
+      source: cand.yoloBacked ? "yolo-mask" : "color-rescue",
       canonicalPositions: [...cand.placement.cellSet],
       canonicalOrientationIndex: cand.placement.orientationIndex,
+      placedDespiteAmbiguity: ambiguous ? true : undefined,
     });
   }
 
@@ -245,9 +241,14 @@ export function mapPiecesToBoardState(
     else colorRescueCount++;
   }
 
-  const stats: PieceMapStats = { maskCount, colorRescueCount, droppedColorClassIds: [] };
+  const stats: PieceMapStats = {
+    maskCount,
+    colorRescueCount,
+    droppedColorClassIds: [],
+    droppedDuplicateCount,
+  };
 
-  return { placements: placementsOut, unassignedDetections, stats };
+  return { placements: placementsOut, unassignedDetections, unassignedPieces, stats };
 }
 
 // ── Debug export ─────────────────────────────────────────────────────────────
