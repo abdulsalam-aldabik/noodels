@@ -19,11 +19,14 @@ import {
   type RawDetection,
   CLASS_NAMES,
 } from "../inference/types";
+import { BOARD_WIDTH, BOARD_HEIGHT, MISSING_POSITIONS } from "../engine/constants";
 import {
   classifyCellsByColor,
   whiteBalanceRectifiedCanvas,
+  type CellClassification,
   type ColorClassificationResult,
 } from "./ColorCellClassifier";
+import { applyHomography } from "./Rectifier";
 import {
   getPlacementsByClass,
   type PinVisitPlacement,
@@ -37,6 +40,8 @@ import type {
   UnassignedPiece,
 } from "./types";
 import type { AmbiguityPlacementPolicy } from "../pipeline/types";
+
+const MISSING_CELL_SET: Set<number> = new Set(MISSING_POSITIONS);
 
 /** Minimum YOLO score for a detection to boost a class's assignment priority. */
 export const YOLO_PIECE_MIN_SCORE = 0.25;
@@ -92,7 +97,7 @@ export function fitBestPlacement(
 export function mapPiecesToBoardState(
   rectifiedCanvas: HTMLCanvasElement,
   detections: RawDetection[],
-  _homography?: Homography,
+  homography?: Homography,
   ambiguityPolicy: AmbiguityPlacementPolicy = "off",
 ): BoardState {
   // Which classes YOLO detected + their best score — used for priority & confidence.
@@ -117,6 +122,32 @@ export function mapPiecesToBoardState(
     let set = cellsByClass.get(cell.classId);
     if (!set) { set = new Set(); cellsByClass.set(cell.classId, set); }
     set.add(cell.cellIndex);
+  }
+
+  // Augment color cell pools with YOLO-projected geometry.
+  //
+  // For each confident YOLO detection that has a mask polygon, project it
+  // through the rectification homography to find which board cells it covers.
+  // Then find the dominant COLOR class in those projected cells (not YOLO's
+  // class ID, which can be wrong). Add the projected cells to that color
+  // class's pool so the placement fitter has a richer, spatially-anchored
+  // cell set — even when color classification misses part of a piece due to
+  // shadow, glare, or boundary effects.
+  if (homography) {
+    const colorCellMap = new Map<number, CellClassification>();
+    for (const cc of colorResult.cells) colorCellMap.set(cc.cellIndex, cc);
+
+    for (const det of detections) {
+      if (det.classId < 0 || det.classId >= PIECE_CLASS_COUNT) continue;
+      if (det.score < YOLO_PIECE_MIN_SCORE) continue;
+      const yoloCells = projectDetectionToBoardCells(det, homography);
+      if (yoloCells.size < 2) continue;
+      const domClass = getDominantColorClass(yoloCells, colorCellMap);
+      if (domClass < 0) continue;
+      let pool = cellsByClass.get(domClass);
+      if (!pool) { pool = new Set(); cellsByClass.set(domClass, pool); }
+      for (const c of yoloCells) pool.add(c);
+    }
   }
 
   // Best placement per class.
@@ -249,6 +280,80 @@ export function mapPiecesToBoardState(
   };
 
   return { placements: placementsOut, unassignedDetections, unassignedPieces, stats };
+}
+
+// ── YOLO geometry helpers ─────────────────────────────────────────────────────
+
+/**
+ * Project a YOLO detection's mask polygon through the rectification homography
+ * (image coords → board units) and return the set of board cell indices whose
+ * centres fall inside the projected polygon.
+ *
+ * Cell (col, row) has its centre at board-unit coordinate (col, row), matching
+ * the DLT destination corners [-0.5, 13.5] used by the Rectifier.
+ */
+function projectDetectionToBoardCells(
+  detection: RawDetection,
+  homography: Homography,
+): Set<number> {
+  const polygon = detection.polygon;
+  if (!polygon || polygon.length < 3) return new Set();
+
+  const projPoly = polygon.map((p) => applyHomography(homography.forward, p.x, p.y));
+
+  const cells = new Set<number>();
+  for (let row = 0; row < BOARD_HEIGHT; row++) {
+    for (let col = 0; col < BOARD_WIDTH; col++) {
+      const cellIndex = row * BOARD_WIDTH + col;
+      if (MISSING_CELL_SET.has(cellIndex)) continue;
+      if (pointInPolygon(col, row, projPoly)) cells.add(cellIndex);
+    }
+  }
+  return cells;
+}
+
+/** Ray-casting point-in-polygon test. */
+function pointInPolygon(
+  px: number,
+  py: number,
+  poly: Array<{ x: number; y: number }>,
+): boolean {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i].x, yi = poly[i].y;
+    const xj = poly[j].x, yj = poly[j].y;
+    if ((yi > py) !== (yj > py) && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+/**
+ * Given a set of board cell indices and a prebuilt color-cell lookup map,
+ * return the piece classId that appears in the majority of those cells.
+ * Returns -1 if no class meets the minimum agreement threshold.
+ */
+function getDominantColorClass(
+  cells: Set<number>,
+  colorCellMap: Map<number, CellClassification>,
+): number {
+  const counts = new Map<number, number>();
+  for (const cellIdx of cells) {
+    const cc = colorCellMap.get(cellIdx);
+    if (!cc || cc.classId < 0) continue;
+    counts.set(cc.classId, (counts.get(cc.classId) ?? 0) + 1);
+  }
+
+  let bestClass = -1;
+  let bestCount = 0;
+  for (const [classId, count] of counts) {
+    if (count > bestCount) { bestCount = count; bestClass = classId; }
+  }
+
+  // Require at least 2 agreeing cells and 30% coverage to guard against noise.
+  if (bestCount < 2 || bestCount < cells.size * 0.3) return -1;
+  return bestClass;
 }
 
 // ── Debug export ─────────────────────────────────────────────────────────────

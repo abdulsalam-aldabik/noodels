@@ -299,13 +299,28 @@ export function locateBoard(
 
   candidates.sort((a, b) => b.score - a.score);
   const winner = candidates[0];
-  const status: LocalizationStatus = winner.score >= threshold ? "ok" : "lowConfidence";
+
+  // If any winning corner sits within 5% of the image edge the board mask was
+  // clipped by the frame boundary — the hull is incomplete and the corner
+  // estimate is unreliable. Apply a score penalty so pin-refinement is treated
+  // as the authoritative path and the UI can show a soft warning.
+  const edgeMarginW = imageSize.width * 0.05;
+  const edgeMarginH = imageSize.height * 0.05;
+  const clipped = winner.corners.some(
+    (c) =>
+      c.x < edgeMarginW ||
+      c.x > imageSize.width - edgeMarginW ||
+      c.y < edgeMarginH ||
+      c.y > imageSize.height - edgeMarginH,
+  );
+  const effectiveScore = clipped ? winner.score * 0.85 : winner.score;
+  const status: LocalizationStatus = effectiveScore >= threshold ? "ok" : "lowConfidence";
 
   return {
     imageSize,
     corners: winner.corners,
     cornerSource: winner.source,
-    cornerScore: winner.score,
+    cornerScore: effectiveScore,
     candidates,
     hingeFound,
     hingePolygon: hingeDet
@@ -320,8 +335,14 @@ export function locateBoard(
         ]
       : undefined,
     status,
-    message: status === "lowConfidence" ? "winning corner score below threshold" : undefined,
+    message: buildLocMessage(status, clipped),
   };
+}
+
+function buildLocMessage(status: LocalizationStatus, clipped: boolean): string | undefined {
+  if (status !== "lowConfidence") return undefined;
+  if (clipped) return "board corners near image edge — move back for full board in frame";
+  return "winning corner score below threshold";
 }
 
 function makeFailedRef(imageSize: ImageSize, message: string): BoardRef {

@@ -36,7 +36,7 @@ export const HOMOGRAPHY_CONDITION_THRESHOLD = 5_000;
 
 // ── Task 1: Board crop padding ───────────────────────────────────────────────
 /** Fraction of the fused board bbox to add as padding on each side. */
-const BOARD_CROP_PADDING = 0.05;
+const BOARD_CROP_PADDING = 0.10;
 
 export interface ScanPipelineOptions {
   runner?: InferenceRunner;
@@ -359,8 +359,10 @@ export class ScanPipeline {
     const cropW = cropRight - cropX;
     const cropH = cropBottom - cropY;
 
-    // Don't crop if the board already fills most of the frame.
-    if (cropW / imgW > 0.85 && cropH / imgH > 0.85) {
+    // Don't crop if the board already fills most of the frame in either
+    // dimension — close-up portrait shots often fill width but not height,
+    // and re-cropping only adds noise without zooming in further.
+    if (cropW / imgW > 0.85 || cropH / imgH > 0.85) {
       return { croppedInference: null, cropOffset: null };
     }
 
