@@ -499,7 +499,7 @@ export default function IQNoodlesApp() {
           solverStatus={solverStatus}
         />
 
-        {showDebug && (
+        {import.meta.env.DEV && showDebug && (
           <DebugPanel
             selectedPieceId={selectedPieceId}
             selectedOrientation={orientationByPiece[selectedPieceId]}

@@ -32,9 +32,11 @@ export default function ControlBar({
       <button type="button" onClick={onValidate}>Validate</button>
       <button type="button" onClick={onSolve}>Solve</button>
       <button type="button" onClick={onHint}>Hint</button>
-      <button type="button" onClick={onToggleDebug}>
-        {showDebug ? "Hide Debug Panel" : "Show Debug Panel"}
-      </button>
+      {import.meta.env.DEV && (
+        <button type="button" onClick={onToggleDebug}>
+          {showDebug ? "Hide Debug Panel" : "Show Debug Panel"}
+        </button>
+      )}
       {solverStatus && <span className="feedback-line">{solverStatus}</span>}
     </div>
   );

@@ -63,6 +63,7 @@ archive/
 # Node
 node_modules/
 webapp-v2/dist/
+webapp-v4/dist/
 
 # Phone debug captures (auto-saved by webapp-v4 dev server — see vite.config.ts)
 phone-debug/

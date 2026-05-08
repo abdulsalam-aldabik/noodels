@@ -225,7 +225,7 @@ export default function CameraCaptureView({
       totalMs: Math.round(performance.now() - t0),
     };
     setDiagnostics(diag);
-    console.info("[camera] capture", diag);
+    if (import.meta.env.DEV) console.info("[camera] capture", diag);
 
     if (capturedUrl) URL.revokeObjectURL(capturedUrl);
     const url = URL.createObjectURL(blob);

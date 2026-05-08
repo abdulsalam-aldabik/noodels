@@ -319,8 +319,12 @@ export function classifyCellsByColor(
       // Piece material is bright and colorful; board is dark and gray.
       pixelColors.sort((a, b) => (b.sat * b.lum) - (a.sat * a.lum));
 
-      // Take the top 40% most-chromatic pixels and compute their median color.
-      const topCount = Math.max(3, Math.floor(pixelColors.length * 0.4));
+      // Take the top 20% most-chromatic pixels and compute their median color.
+      // 20% (vs the previous 40%) focuses the sample on the actual piece surface
+      // and avoids contamination from dark board background showing through tube
+      // gaps — which previously pushed the median toward dark maroon and caused
+      // the pink piece to match DarkRed instead of Pink.
+      const topCount = Math.max(3, Math.floor(pixelColors.length * 0.2));
       const topPixels = pixelColors.slice(0, topCount);
 
       // Median color (more robust than mean against outliers).

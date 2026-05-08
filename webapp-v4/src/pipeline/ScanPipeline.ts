@@ -65,7 +65,7 @@ export class ScanPipeline {
   constructor(options: ScanPipelineOptions = {}) {
     this.runner = options.runner ?? new InferenceRunner();
     this.canvasSize = options.rectifiedCanvasSize ?? DEFAULT_RECTIFIED_CANVAS;
-    this.emitArtifacts = options.emitArtifacts ?? true;
+    this.emitArtifacts = options.emitArtifacts ?? import.meta.env.DEV;
     this.localizationVersion = options.localizationVersion ?? "pins";
     this.ambiguityPolicy = options.ambiguityPlacementPolicy ?? "off";
   }
