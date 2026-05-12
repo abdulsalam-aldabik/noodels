@@ -5,7 +5,6 @@ import type { ScanResult } from "../pipeline/types";
 import { getSharedPipeline } from "../pipeline/pipelinePreload";
 
 import BoardGhostOverlay from "./BoardGhostOverlay";
-import CameraFramingOverlay from "./CameraFramingOverlay";
 import ScanRetryPrompt from "./ScanRetryPrompt";
 import { uploadDebugBundle } from "./debugSave";
 import { buildConfirmedPlacements, countConfirmable } from "./scanConfirm";
@@ -50,8 +49,6 @@ export default function CameraCaptureView({
   const [scanError, setScanError] = useState<string | null>(null);
   const [diagnostics, setDiagnostics] = useState<CaptureDiagnostics | null>(null);
   const [showDetails, setShowDetails] = useState(false);
-  /** Task 6A: framing overlay dismissed flag (in-memory, not localStorage). */
-  const [framingDismissed, setFramingDismissed] = useState(false);
 
   // ── Camera lifecycle ────────────────────────────────────────────────────
 
@@ -310,11 +307,6 @@ export default function CameraCaptureView({
 
       {/* Ghost overlay — only while live (not while reviewing a captured frame) */}
       {phase === "live" && <BoardGhostOverlay />}
-
-      {/* Task 6A: Framing overlay — shown on live view until dismissed */}
-      {phase === "live" && !framingDismissed && (
-        <CameraFramingOverlay onDismiss={() => setFramingDismissed(true)} />
-      )}
 
       {/* Top bar */}
       <div className="camera-topbar">
